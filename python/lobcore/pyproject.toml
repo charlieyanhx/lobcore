@@ -6,10 +6,27 @@ build-backend = "maturin"
 name = "lobcore"
 version = "0.1.0"
 description = "Python bindings for lobcore: a bounded-array order book, ITCH 5.0 replay and book features in Rust"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Hanxiong (Charlie) Yan" }]
 dependencies = ["numpy>=1.26"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+Homepage = "https://github.com/charlieyanhx/lobcore"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B"]
+ignore = ["E501"]

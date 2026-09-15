@@ -6,5 +6,12 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+description = "Seeded synthetic Nasdaq TotalView-ITCH 5.0 day writer with a per-message truth sidecar"
 
 [dependencies]
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

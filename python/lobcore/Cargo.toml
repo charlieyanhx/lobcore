@@ -6,9 +6,27 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-
-[dependencies]
+description = "Python bindings for lobcore (PyO3, abi3-py311)"
 
 [lib]
 name = "lobcore"
 crate-type = ["cdylib"]
+# A cdylib built with pyo3's `extension-module` feature leaves the CPython symbols undefined
+# (resolved by the interpreter at import time), so a Rust test binary for this crate cannot link;
+# every test of the Python surface lives in python/tests and runs under pytest.
+test = false
+doctest = false
+bench = false
+
+[features]
+# CI passes `--features abi3-py311` to maturin; the pyo3 feature is always on (see below), so this
+# is an alias that keeps that command line valid.
+abi3-py311 = ["pyo3/abi3-py311"]
+
+[dependencies]
+lob-core = { path = "../../crates/lob-core" }
+lob-feed = { path = "../../crates/lob-feed" }
+lob-features = { path = "../../crates/lob-features" }
+lob-synth = { path = "../../crates/lob-synth" }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"] }
+numpy = "0.29"

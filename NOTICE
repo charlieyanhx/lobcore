@@ -1,0 +1,35 @@
+lobcore is MIT licensed (see LICENSE). The repository vendors the following third-party test
+fixtures, each published by its authors under the Apache License 2.0
+(https://www.apache.org/licenses/LICENSE-2.0). They are byte-layout fixtures only (two and four
+records), used by crates/lob-feed/tests/dbn.rs; they are not market data samples.
+
+1. crates/lob-feed/tests/fixtures/dbn/test_data.mbo.v3.dbn (472 bytes)
+   Source: https://github.com/databento/dbn, path tests/data/test_data.mbo.v3.dbn,
+   commit a7d8ee93a5d5d0b7082d0ca15ab85c01e3cce550 (main, fetched 2026-09-15),
+   sha256 d2a526d952f845ab8f03ceac42ec828a2541e0b5e2e8a64df2e8bbaa1e898184.
+   Copyright Databento, Inc. Licensed under the Apache License, Version 2.0.
+
+2. crates/lob-feed/tests/fixtures/dbn/test_data.mbo.dbn.zst (249 bytes)
+   Source: https://github.com/databento/databento-python, path
+   tests/data/XNAS.ITCH/test_data.mbo.dbn.zst,
+   commit e675ef30369f5ee9f68b04606080c519adf3be69 (main, fetched 2026-09-15),
+   sha256 c5111492d0e6a3504633664a715d617b2d73ab72b681e5f00428a288d0952db1.
+   Copyright Databento, Inc. Licensed under the Apache License, Version 2.0.
+
+3. crates/lob-feed/tests/fixtures/dbn/xnas_itch.test_data.mbo.dbn (584 bytes)
+   Derived from item 2 by `zstd -d` (zstd 1.5.7) so the tests need no zstd decoder; same
+   licence and copyright as item 2. sha256
+   22a768c4a0c2fddfb05c6de3bec0cedd8e4379527ff18d3b4767a194b2711cbe.
+
+No Nasdaq TotalView-ITCH bytes are in the repository; scripts/fetch_itch.sh downloads a
+prefix of the public sample into the gitignored data/ directory for local, md5-pinned tests.
+
+Third-party Rust dependencies (runtime and build, resolved by Cargo.lock on 2026-09-15) are
+licensed under MIT and/or Apache-2.0 except: numpy 0.29.0 (BSD-2-Clause), zlib-rs 0.6.8
+(Zlib licence; the flate2 backend), target-lexicon 0.13.5 (Apache-2.0 WITH LLVM-exception,
+pyo3's build-time target parser), unicode-ident 1.0.24 ((MIT OR Apache-2.0) AND Unicode-3.0),
+and the wasm / UEFI leaves of getrandom (wasip2, wit-bindgen: Apache-2.0 WITH LLVM-exception OR
+Apache-2.0 OR MIT; r-efi: MIT OR Apache-2.0 OR LGPL-2.1-or-later, used under MIT) that are
+listed in Cargo.lock but not compiled on macOS or Linux. Their
+licence texts ship with the crates in the Cargo registry. The Python package depends on numpy
+(BSD-3-Clause).

@@ -21,6 +21,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 hdrhistogram = "7.6"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+md-5 = "0.10"
 
 [profile.release]
 lto = "fat"
@@ -30,3 +31,11 @@ debug = "line-tables-only"
 
 [profile.bench]
 inherits = "release"
+
+# The synthetic-day generator hashes the whole truth book after every message; unoptimised sha2 and
+# BTreeMap code makes the 100k-message fixture test ~40x slower, so these two packages are optimised
+# in dev/test builds. Everything else keeps the default debug settings.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.lob-synth]
+opt-level = 3

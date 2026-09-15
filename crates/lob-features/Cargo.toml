@@ -6,5 +6,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+description = "Exact-rational L1/L5 order-book features: weighted mid, imbalance, spread, depth, Cont-Kukanov-Stoikov OFI"
 
 [dependencies]
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -60,13 +60,12 @@ stats["event_log_hash"].hex()            # == the CLI's event-log sha256 below
 ## Replay statistics
 
 The block below is written by `lobcore replay --stats tests/fixtures/synth_s7_100k.itch
---write-readme README.md` and checked byte for byte (every count and hash; never the msgs/s
-rows) by `--check-readme README.md` in CI on the fixture the CI job regenerates from seed 7.
-The fixture is 8 synthetic symbols, pre-open crossed quotes uncrossed at the `Q` event, 1 %
-placeholder adds at $0.01 / $199,999.99 and sub-penny prices for the sub-dollar names. The two
-msgs/s rows are the single run that last wrote the block (Apple M1, `-C target-cpu=apple-m1`,
-under load); they are excluded from the check and are not a benchmark, the Throughput section
-is.
+--write-readme README.md` and checked byte for byte (every count and hash) by
+`--check-readme README.md` in CI on the fixture the CI job regenerates from seed 7. The fixture
+is 8 synthetic symbols, pre-open crossed quotes uncrossed at the `Q` event, 1 % placeholder adds
+at $0.01 / $199,999.99 and sub-penny prices for the sub-dollar names. The block carries no
+timing rows (a second `--write-readme` is a no-op); `lobcore replay --stats` prints two msgs/s
+rows to stdout for the run at hand, and the Throughput section is the benchmark.
 
 <!-- lobcore:begin:stats -->
 | replay | value |
@@ -90,8 +89,6 @@ is.
 | E/C at level head | 668 / 668 = 1.0000 |
 | event log | 94,895 records, sha256 `fd52410fc6465823184edb2830ae6969fb27a5d7f2a4ea4497012a2c16245fcc` |
 | close book-state hash, all locates | `851e617c74e7a148336501e55073f060783565de218818a853275f69e891ae34` |
-| msgs/s parse+apply + event-log sha256, excluding gunzip/read | 2.12 M (wall 47.2 ms, read 0.9 ms) |
-| msgs/s parse+apply + event-log sha256, including gunzip/read | 2.08 M (wall 48.2 ms) |
 
 | type \ hour | 08 | 09 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | total |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|

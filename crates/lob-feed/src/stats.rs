@@ -337,8 +337,18 @@ impl Stats {
             .join(" · ")
     }
 
-    /// The markdown block, markers included.
+    /// The markdown block, markers included, with the two msgs/s rows (for stdout).
     pub fn render(&self) -> String {
+        self.render_with(true)
+    }
+
+    /// The markdown block WITHOUT the msgs/s rows: what `--write-readme` splices into a README, so a
+    /// second run is byte-identical (timings belong in the throughput section, outside any diffed block).
+    pub fn render_block(&self) -> String {
+        self.render_with(false)
+    }
+
+    fn render_with(&self, timing: bool) -> String {
         let mut o = String::with_capacity(4096);
         o.push_str(BEGIN_MARK);
         o.push('\n');
@@ -464,7 +474,7 @@ impl Stats {
             "| close book-state hash, all locates | `{}` |",
             hex(&self.all_locates_hash)
         );
-        if let Some(t) = self.timing {
+        if let Some(t) = self.timing.filter(|_| timing) {
             let _ = writeln!(
                 o,
                 "| msgs/s parse+apply{}, excluding gunzip/read | {:.2} M (wall {:.1} ms, read {:.1} ms) |",

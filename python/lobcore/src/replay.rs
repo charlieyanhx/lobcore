@@ -224,7 +224,7 @@ fn run_replay(
 ///   `spread` is 0 unless both sides are present; `ofi` is the Cont-Kukanov-Stoikov step
 ///   between this row and the locate's previous row (0 when either row lacked a side).
 #[pyfunction]
-#[pyo3(signature = (path, symbols = None, locates = None, every_n = None, every_ns = None, features = true, array_window = 1024))]
+#[pyo3(signature = (path, symbols = None, locates = None, every_n = None, every_ns = None, features = true, array_window = 2048))]
 #[allow(clippy::too_many_arguments)]
 pub fn replay_itch<'py>(
     py: Python<'py>,
@@ -366,7 +366,7 @@ fn stats_dict<'py>(py: Python<'py>, st: &Stats) -> PyResult<Bound<'py, PyDict>> 
 /// counter, the close hashes as `bytes`, per-locate rows under `"locates"` and the rendered
 /// markdown block under `"render"`.
 #[pyfunction]
-#[pyo3(signature = (path, symbols = None, locates = None, array_window = 1024))]
+#[pyo3(signature = (path, symbols = None, locates = None, array_window = 2048))]
 pub fn replay_stats<'py>(
     py: Python<'py>,
     path: PathBuf,

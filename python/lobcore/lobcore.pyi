@@ -101,7 +101,7 @@ def replay_itch(
     every_n: int | None = None,
     every_ns: int | None = None,
     features: bool = True,
-    array_window: int = 1024,
+    array_window: int = 2048,
 ) -> dict[str, NDArray[Any]]:
     """Sampled L1 snapshots (+ features) of a plain or ``.gz`` ITCH 5.0 file as numpy arrays:
     ``ts u64, locate u16, bid_px i32, bid_qty u32, ask_px i32, ask_qty u32`` and, with
@@ -112,7 +112,7 @@ def replay_stats(
     path: str | PathLike[str],
     symbols: list[str] | None = None,
     locates: list[int] | None = None,
-    array_window: int = 1024,
+    array_window: int = 2048,
 ) -> dict[str, Any]:
     """The replay-statistics contract as a dict (counts, ``bytes`` hashes, ``locates`` rows,
     timing, and the rendered markdown block under ``"render"``)."""

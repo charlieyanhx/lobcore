@@ -69,11 +69,11 @@ pub fn run(a: &ReplayArgs) -> Result<i32, Error> {
     }
     let mut code = 0;
     if let Some(p) = &a.write_readme {
-        readme::write(p, &block)?;
+        readme::write(p, &st.render_block())?;
         eprintln!("wrote the stats block into {}", p.display());
     }
     if let Some(p) = &a.check_readme {
-        match readme::check(p, &block)? {
+        match readme::check(p, &st.render_block())? {
             readme::Check::Same => eprintln!("{}: stats block up to date", p.display()),
             readme::Check::Missing => {
                 eprintln!(

@@ -321,14 +321,14 @@ Wrong number -> corrected number, in the order they were hit; nothing composed.
    parse+apply number was 4.0 M and the book looked slow; separating the rows showed the sha256
    costs more per message than the book (~140 ns vs ~100 ns on this M1). The bench now reports
    both and the stats block labels its rows.
-7. README timing rows: the stats block written by `--write-readme` includes two msgs/s rows,
-   and a second `--write-readme` run rewrote them (2.55 M -> 2.12 M, single runs). The
-   `--check-readme` comparison ignores rows starting `| msgs/s`, so CI is stable; the README
-   says those two rows are a single run and not a benchmark.
-8. Python vs CLI window default: `lobcore.replay_stats` defaults `array_window` to 1024 (the
-   contract) while the CLI defaults to 2048, and the window is printed in a deterministic line
+7. README timing rows: the stats block first written by `--write-readme` included two msgs/s
+   rows, and a second `--write-readme` run rewrote them (2.55 M -> 2.12 M, single runs), so the
+   README changed byte-wise between runs. The block written into a README now carries no timing
+   rows (`Stats::render_block`); timings print to stdout and live in the Throughput section.
+8. Python vs CLI window default: `lobcore.replay_stats` first defaulted `array_window` to 1024 (the
+   contract) while the CLI defaulted to 2048, and the window is printed in a deterministic line
    of the block, so the Python render did not match the CLI's block until the parity test
-   passed `array_window=2048` explicitly.
+   passed `array_window=2048` explicitly. Both now default to 2048.
 9. Research-pass digests that could not be reproduced: the seed 1-3 event-log digests
    (`d2c9d0d8...`, `af0921d6...`, `a7b7edab...`) depend on a Python model's field conventions
    that were not preserved; rather than guess them, the build pinned its own seed-7 `ops.bin`

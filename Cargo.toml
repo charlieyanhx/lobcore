@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = ["crates/lob-core", "crates/lob-features", "crates/lob-synth", "crates/lob-feed", "crates/lob-bench", "python/lobcore"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Hanxiong (Charlie) Yan"]
+repository = "https://github.com/charlieyanhx/lobcore"
+rust-version = "1.89"
+
+[workspace.dependencies]
+rustc-hash = "2"
+proptest = "1.11"
+rand = "0.9"
+rand_chacha = "0.9"
+sha2 = "0.10"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+criterion = { version = "0.8", features = ["html_reports"] }
+hdrhistogram = "7.6"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
+
+[profile.bench]
+inherits = "release"

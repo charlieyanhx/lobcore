@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "lobcore"
+version = "0.1.0"
+description = "Python bindings for lobcore: a bounded-array order book, ITCH 5.0 replay and book features in Rust"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Hanxiong (Charlie) Yan" }]
+dependencies = ["numpy>=1.26"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

@@ -1,0 +1,16 @@
+[package]
+name = "lob-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Bounded-array L3 order book with a BTreeMap reference book, event-log and book-state hash contracts"
+
+[dependencies]
+rustc-hash = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

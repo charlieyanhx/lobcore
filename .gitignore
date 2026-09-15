@@ -1,0 +1,14 @@
+/target
+**/target
+data/
+*.itch.gz
+*.NASDAQ_ITCH50*
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+wheels/
+python/lobcore/*.so
+docs/latency-private.md

@@ -68,6 +68,61 @@ pub struct SynthConfig {
 /// (A 39.9 / D 37.3 / X 11.0 / L 5.0 / U 4.8 / F 0.9 / E 0.4 / P 0.1 %; no C before 09:30).
 pub const DEFAULT_MIX: [f32; 9] = [0.399, 0.009, 0.373, 0.110, 0.048, 0.004, 0.0, 0.001, 0.050];
 
+/// Largest `n_msgs` accepted by [`check_args`]: a full Nasdaq day is ~300-450 M messages, so
+/// anything above 2^32 is a mistake, not a request (and would exhaust memory before finishing).
+pub const MAX_MSGS: u64 = 1 << 32;
+
+impl SynthConfig {
+    /// Reject a config the generator cannot honour: no locates, a non-finite / negative / all-zero
+    /// `mix`, a rate outside `[0, 1]` (or NaN), `open_ns >= close_ns`, or a `close_ns` that does not
+    /// fit the 48-bit ITCH timestamp. The message names the offending field.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.locates == 0 {
+            return Err("locates must be at least 1".into());
+        }
+        if self.mix.iter().any(|w| !w.is_finite() || *w < 0.0) {
+            return Err("mix weights must be finite and >= 0".into());
+        }
+        if self.mix.iter().map(|w| f64::from(*w)).sum::<f64>() <= 0.0 {
+            return Err("mix weights must not all be zero".into());
+        }
+        for (name, r) in [
+            ("placeholder_rate", self.placeholder_rate),
+            ("unknown_ref_rate", self.unknown_ref_rate),
+        ] {
+            if !(0.0..=1.0).contains(&r) {
+                return Err(format!("{name} must be in [0, 1], got {r}"));
+            }
+        }
+        if self.open_ns >= self.close_ns {
+            return Err(format!(
+                "open_ns ({}) must precede close_ns ({})",
+                self.open_ns, self.close_ns
+            ));
+        }
+        if self.close_ns >= (1u64 << 48) {
+            return Err(format!("close_ns ({}) must fit 48 bits", self.close_ns));
+        }
+        Ok(())
+    }
+}
+
+/// Validate `cfg` and `n_msgs` together: `2 * locates + 6 <= n_msgs <= MAX_MSGS`. The CLI and the
+/// Python binding map the `Err` text to their own error types; the Rust API panics with it.
+pub fn check_args(n_msgs: u64, cfg: &SynthConfig) -> Result<(), String> {
+    cfg.validate()?;
+    let min = 2 * u64::from(cfg.locates) + 6;
+    if n_msgs < min {
+        return Err(format!(
+            "n_msgs must be at least 2 * locates + 6 = {min}, got {n_msgs}"
+        ));
+    }
+    if n_msgs > MAX_MSGS {
+        return Err(format!("n_msgs must be at most {MAX_MSGS}, got {n_msgs}"));
+    }
+    Ok(())
+}
+
 impl Default for SynthConfig {
     fn default() -> Self {
         Self {
@@ -113,8 +168,8 @@ pub struct SynthDay {
     pub truth: Vec<Truth>,
 }
 
-/// Generate `n_msgs` framed messages and the truth sidecar. Panics on an invalid config or when
-/// `n_msgs < 2 * locates + 6`.
+/// Generate `n_msgs` framed messages and the truth sidecar. Panics with the [`check_args`] text
+/// on an invalid config or `n_msgs` (callers that must not panic call [`check_args`] first).
 pub fn synth_itch(seed: u64, n_msgs: u64, cfg: &SynthConfig) -> SynthDay {
     generator::Generator::new(seed, cfg, true, n_msgs).run(n_msgs)
 }

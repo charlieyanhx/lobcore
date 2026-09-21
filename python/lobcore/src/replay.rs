@@ -173,11 +173,13 @@ fn run_replay(
         let book_msg = is_book_msg(&m);
         let locate = m.locate();
         let ts = m.ts();
-        session.apply_msg(m);
+        // `changed` is false for a rejected order message (unknown / duplicate id, over-execute,
+        // bad qty / price / side): those neither count toward the cadence nor emit a row
+        let changed = session.apply_msg(m);
         let (Some(locate), Some(ts)) = (locate, ts) else {
             continue;
         };
-        if !book_msg {
+        if !book_msg || !changed {
             continue;
         }
         let stats = session.stats();
@@ -216,8 +218,10 @@ fn run_replay(
 ///
 /// - `symbols` / `locates`: the locates to sample; they run on the bounded-array book. With
 ///   neither given every locate is sampled on the reference book.
-/// - `every_n`: emit a row after every n-th book-changing message of a sampled locate;
-///   `every_ns`: emit when at least that many nanoseconds passed since the locate's last row.
+/// - `every_n`: emit a row after every n-th book-changing message of a sampled locate (an
+///   order message the book accepted; rejected ones are counted in `replay_stats` and do not
+///   advance the cadence); `every_ns`: emit on the first book-changing message at least that
+///   many nanoseconds after the locate's last row.
 ///   Default (both `None`) is `every_n=1`; passing both is an error.
 /// - `features=False` returns only `ts, locate, bid_px, bid_qty, ask_px, ask_qty`.
 /// - An empty side has `px = 0, qty = 0`; `wmid`, `imb1`, `imb5` are NaN when undefined;
@@ -308,6 +312,7 @@ fn stats_dict<'py>(py: Python<'py>, st: &Stats) -> PyResult<Bound<'py, PyDict>> 
     d.set_item("messages", st.messages)?;
     d.set_item("truncated", st.truncated)?;
     d.set_item("source_cut", st.source_cut)?;
+    d.set_item("trailing_bytes", st.trailing_bytes)?;
     d.set_item("bytes_in", st.bytes_in)?;
     d.set_item("unknown_type", st.unknown_type)?;
     let by_type = PyDict::new(py);
@@ -342,6 +347,7 @@ fn stats_dict<'py>(py: Python<'py>, st: &Stats) -> PyResult<Bound<'py, PyDict>> 
     d.set_item("bad_price", st.bad_price)?;
     d.set_item("bad_side", st.bad_side)?;
     d.set_item("no_directory", st.no_directory)?;
+    d.set_item("placeholder_adds", st.placeholder_adds)?;
     d.set_item("ec_total", st.ec_total)?;
     d.set_item("ec_at_head", st.ec_at_head)?;
     d.set_item("event_count", st.event_count)?;

@@ -185,7 +185,7 @@ def test_close_hashes_and_event_log_agree_across_three_implementations(fixture_m
         assert py_hash == by_locate[loc]["close_hash"]
         assert py_hash == by_locate_array[loc]["close_hash"]
         last_truth = max(i for i, tl in enumerate(truth["locate"]) if tl == loc)
-        assert py_hash == truth["book_hash"][last_truth]
+        assert py_hash == truth["book_hash"][last_truth].tobytes()
         assert len(py_books[loc].orders) == lob_books[loc].live_orders == int(truth["live_orders"][last_truth])
         assert by_locate_array[loc]["array"] and not by_locate[loc]["array"]
         all_h.update(struct.pack("<H", loc) + py_hash)

@@ -10,11 +10,11 @@
 //! [`SliceFrames`] frames an in-memory byte slice with the same rules and no copying.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 use std::time::Instant;
 
-use flate2::read::MultiGzDecoder;
+use flate2::bufread::GzDecoder;
 
 /// Streaming buffer size: 4 MB (the largest frame is 2 + 65,535 bytes).
 pub const BUF_LEN: usize = 4 << 20;
@@ -38,6 +38,12 @@ pub trait FrameSource {
     fn source_cut(&self) -> bool {
         false
     }
+    /// Bytes after the last gzip member that were not another member (padding, a concatenated
+    /// non-gzip file, garbage); they end the input and are counted, as `gzip -dc` warns and
+    /// ignores them. Always 0 for a plain source.
+    fn trailing_bytes(&self) -> u64 {
+        0
+    }
 }
 
 /// Streaming framer over a `Read`.
@@ -49,6 +55,7 @@ pub struct Framer<R: Read> {
     end: usize,
     eof: bool,
     cut: bool,
+    trailing: u64,
     frames: u64,
     truncated: u32,
     bytes_in: u64,
@@ -72,6 +79,7 @@ impl<R: Read> Framer<R> {
             end: 0,
             eof: false,
             cut: false,
+            trailing: 0,
             frames: 0,
             truncated: 0,
             bytes_in: 0,
@@ -107,6 +115,15 @@ impl<R: Read> Framer<R> {
                     // a cut deflate stream: everything decoded so far is valid input
                     self.eof = true;
                     self.cut = true;
+                    break;
+                }
+                Err(e) if e.get_ref().is_some_and(|i| i.is::<TrailingBytes>()) => {
+                    // non-member bytes after the last gzip member: end of input, counted
+                    self.trailing = e
+                        .into_inner()
+                        .and_then(|i| i.downcast::<TrailingBytes>().ok())
+                        .map_or(0, |t| t.0);
+                    self.eof = true;
                     break;
                 }
                 Err(e) => {
@@ -163,6 +180,10 @@ impl<R: Read> FrameSource for Framer<R> {
 
     fn source_cut(&self) -> bool {
         self.cut
+    }
+
+    fn trailing_bytes(&self) -> u64 {
+        self.trailing
     }
 }
 
@@ -242,24 +263,124 @@ impl FrameSource for SliceFrames<'_> {
     }
 }
 
-/// Open a file for framing: gzip (multi-member, flate2 with the zlib-rs backend) when the path
-/// ends in `.gz`, plain bytes otherwise.
+/// The two gzip magic bytes (RFC 1952).
+const GZ_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+/// The payload of the `io::Error` a [`GzMembers`] returns when the bytes after the last member
+/// are not another member: how many such bytes there were. [`Framer::refill`] turns it into
+/// end-of-input plus `trailing_bytes()`; any other consumer sees an ordinary error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrailingBytes(u64);
+
+impl std::fmt::Display for TrailingBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} trailing bytes after the last gzip member", self.0)
+    }
+}
+
+impl std::error::Error for TrailingBytes {}
+
+/// gzip members decoded one after another (like `MultiGzDecoder`), except that bytes after a
+/// member that do not start another member end the stream with a [`TrailingBytes`] error
+/// instead of `invalid gzip header`, so the members already decoded are not lost. A member cut
+/// mid-stream still surfaces as `UnexpectedEof` (the range-downloaded prefix case).
+struct GzMembers {
+    dec: Option<GzDecoder<Box<dyn BufRead>>>,
+}
+
+impl GzMembers {
+    fn new(src: Box<dyn BufRead>) -> GzMembers {
+        GzMembers {
+            dec: Some(GzDecoder::new(src)),
+        }
+    }
+
+    /// After a member ended: start the next one, or count what follows and stop.
+    fn next_member(&mut self) -> io::Result<bool> {
+        let dec = self.dec.take().expect("decoder present");
+        let mut src = dec.into_inner();
+        let head = src.fill_buf()?;
+        if head.is_empty() {
+            return Ok(false);
+        }
+        if head.len() >= 2 {
+            if head[..2] == GZ_MAGIC {
+                self.dec = Some(GzDecoder::new(src));
+                return Ok(true);
+            }
+            return Err(Self::drain(src, 0));
+        }
+        // one buffered byte: consume it, look at the next, and if together they are the magic
+        // put the consumed byte back in front of the reader
+        let first = head[0];
+        src.consume(1);
+        let second = src.fill_buf()?.first().copied();
+        if first == GZ_MAGIC[0] && second == Some(GZ_MAGIC[1]) {
+            let src: Box<dyn BufRead> = Box::new(io::Cursor::new([first]).chain(src));
+            self.dec = Some(GzDecoder::new(src));
+            return Ok(true);
+        }
+        Err(Self::drain(src, 1))
+    }
+
+    /// Count the rest of the input (already `taken` bytes consumed) into a `TrailingBytes` error.
+    fn drain(mut src: Box<dyn BufRead>, taken: u64) -> io::Error {
+        let mut n = taken;
+        loop {
+            match src.fill_buf() {
+                Ok([]) => break,
+                Ok(b) => {
+                    let k = b.len();
+                    n += k as u64;
+                    src.consume(k);
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return e,
+            }
+        }
+        io::Error::other(TrailingBytes(n))
+    }
+}
+
+impl Read for GzMembers {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let Some(dec) = self.dec.as_mut() else {
+                return Ok(0);
+            };
+            match dec.read(out)? {
+                0 => {
+                    if !self.next_member()? {
+                        return Ok(0);
+                    }
+                }
+                n => return Ok(n),
+            }
+        }
+    }
+}
+
+/// Open a file for framing: gzip (every member, flate2 with the zlib-rs backend) when the
+/// file starts with the gzip magic `1f 8b`, plain bytes otherwise; the extension is not
+/// consulted, so a gzip file named `.itch` and a plain file named `.gz` both frame correctly.
 pub fn open(path: impl AsRef<Path>) -> io::Result<Framer<Box<dyn Read>>> {
     let path = path.as_ref();
-    let file = File::open(path)?;
-    let is_gz = path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("gz"));
+    let mut file = BufReader::with_capacity(1 << 20, File::open(path)?);
+    let is_gz = file.fill_buf()?.starts_with(&GZ_MAGIC);
     let src: Box<dyn Read> = if is_gz {
-        Box::new(MultiGzDecoder::new(BufReader::with_capacity(1 << 20, file)))
+        Box::new(GzMembers::new(Box::new(file)))
     } else {
         Box::new(file)
     };
     Ok(Framer::new(src))
 }
 
-/// Read a whole file into memory (inflating `.gz`), for in-memory benches. A gzip member cut
-/// mid-stream yields the bytes decoded before the cut; the flag says so.
+/// Read a whole file into memory (inflating gzip), for in-memory benches. A gzip member cut
+/// mid-stream yields the bytes decoded before the cut; the flag says so. Bytes after the last
+/// member that are not another member are ignored, as in [`open`].
 pub fn read_all(path: impl AsRef<Path>) -> io::Result<(Vec<u8>, bool)> {
     let mut f = open(path)?;
     let mut out = Vec::new();
@@ -277,6 +398,10 @@ pub fn read_all(path: impl AsRef<Path>) -> io::Result<(Vec<u8>, bool)> {
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                 out.truncate(start);
                 cut = true;
+                break;
+            }
+            Err(e) if e.get_ref().is_some_and(|i| i.is::<TrailingBytes>()) => {
+                out.truncate(start);
                 break;
             }
             Err(e) => return Err(e),
@@ -387,5 +512,139 @@ mod tests {
         assert!(n <= 2);
         assert!(read_all(&cut).unwrap().1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn gz_bytes(payload: &[u8]) -> Vec<u8> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+        enc.write_all(payload).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// Frames, truncated count, `source_cut`, `trailing_bytes` of `path`, or the error text.
+    type Framed = (Vec<Vec<u8>>, u32, bool, u64);
+
+    fn frames_of(path: &Path) -> Result<Framed, String> {
+        let mut f = open(path).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        loop {
+            match f.next_frame() {
+                Ok(Some(p)) => out.push(p.to_vec()),
+                Ok(None) => break,
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok((out, f.truncated(), f.source_cut(), f.trailing_bytes()))
+    }
+
+    #[test]
+    fn open_sniffs_the_gzip_magic_and_tolerates_trailing_bytes() {
+        let a = framed(&[b"hello", b"world"]);
+        let b = framed(&[b"second", b"member"]);
+        let want_a = vec![b"hello".to_vec(), b"world".to_vec()];
+        let want_ab = [want_a.clone(), vec![b"second".to_vec(), b"member".to_vec()]].concat();
+        let dir = std::env::temp_dir().join(format!("lob-feed-sniff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        // the extension is not consulted: plain bytes named .gz, gzip named .itch
+        assert_eq!(
+            frames_of(&write("plain.gz", &a)).unwrap(),
+            (want_a.clone(), 0, false, 0)
+        );
+        assert_eq!(
+            frames_of(&write("gz.itch", &gz_bytes(&a))).unwrap(),
+            (want_a.clone(), 0, false, 0)
+        );
+        // two members concatenated (pigz / cat a.gz b.gz) decode as one stream
+        let two = [gz_bytes(&a), gz_bytes(&b)].concat();
+        assert_eq!(
+            frames_of(&write("two.gz", &two)).unwrap(),
+            (want_ab.clone(), 0, false, 0)
+        );
+        // non-member bytes after the last member end the input, counted, nothing lost
+        let trail = [gz_bytes(&a), b"not a gzip member".to_vec()].concat();
+        assert_eq!(
+            frames_of(&write("trail.gz", &trail)).unwrap(),
+            (want_a.clone(), 0, false, 17)
+        );
+        let two_trail = [two.clone(), vec![0u8; 3]].concat();
+        assert_eq!(
+            frames_of(&write("two_trail.gz", &two_trail)).unwrap(),
+            (want_ab.clone(), 0, false, 3)
+        );
+        // a single 0x1f byte after a member is trailing garbage, not a member
+        let lone = [gz_bytes(&a), vec![0x1f]].concat();
+        assert_eq!(
+            frames_of(&write("lone.gz", &lone)).unwrap(),
+            (want_a.clone(), 0, false, 1)
+        );
+        // a member following a large one still decodes, and a member cut mid-stream is `source_cut`
+        let mut big = framed(&[&vec![7u8; 4096][..]]);
+        for i in 0..2_000u32 {
+            big.extend_from_slice(&framed(&[&i.to_be_bytes()[..]]));
+        }
+        let big_two = [gz_bytes(&big), gz_bytes(&a)].concat();
+        let (frames, t, c, tr) = frames_of(&write("big_two.gz", &big_two)).unwrap();
+        assert_eq!((frames.len(), t, c, tr), (2_003, 0, false, 0));
+        assert_eq!(frames[2001..], want_a[..]);
+        let full = gz_bytes(&big);
+        let (_, _, c, tr) = frames_of(&write("cut.gz", &full[..full.len() / 2])).unwrap();
+        assert!(c);
+        assert_eq!(tr, 0);
+        // an empty file is an empty plain input, not a cut gzip stream
+        assert_eq!(
+            frames_of(&write("empty.gz", b"")).unwrap(),
+            (vec![], 0, false, 0)
+        );
+        assert_eq!(
+            read_all(write("trail2.gz", &trail)).unwrap(),
+            (a.clone(), false)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn gz_members_peek_across_a_read_buffer_boundary() {
+        // the read buffer ends exactly one byte into the second member's magic: the peek must
+        // consume that byte, look at the next, and put it back in front of the decoder
+        let a = framed(&[b"hello", b"world"]);
+        let b = framed(&[b"second", b"member"]);
+        let (ga, gb) = (gz_bytes(&a), gz_bytes(&b));
+        let two = [ga.clone(), gb.clone()].concat();
+        for cap in [ga.len() + 1, ga.len() + 2, ga.len(), 16] {
+            let src: Box<dyn BufRead> =
+                Box::new(BufReader::with_capacity(cap, io::Cursor::new(two.clone())));
+            let mut out = Vec::new();
+            GzMembers::new(src).read_to_end(&mut out).unwrap();
+            assert_eq!(out, [a.clone(), b.clone()].concat(), "capacity {cap}");
+        }
+        // same boundary, but the byte after the first member is a lone 0x1f followed by garbage
+        let junk = [ga.clone(), vec![0x1f, 0x00, 0x00]].concat();
+        let src: Box<dyn BufRead> = Box::new(BufReader::with_capacity(
+            ga.len() + 1,
+            io::Cursor::new(junk.clone()),
+        ));
+        let mut out = Vec::new();
+        let err = GzMembers::new(src).read_to_end(&mut out).unwrap_err();
+        assert_eq!(out, a);
+        assert_eq!(
+            err.to_string(),
+            "3 trailing bytes after the last gzip member"
+        );
+        let mut f = Framer::new(GzMembers::new(Box::new(BufReader::with_capacity(
+            ga.len() + 1,
+            io::Cursor::new(junk),
+        ))));
+        let mut n = 0;
+        while f.next_frame().unwrap().is_some() {
+            n += 1;
+        }
+        assert_eq!((n, f.trailing_bytes(), f.source_cut()), (2, 3, false));
     }
 }

@@ -20,7 +20,8 @@ jobs:
       - run: cargo test --workspace
         env:
           PROPTEST_CASES: "64"
-      - run: cargo bench --workspace --no-run
+      # no `cargo bench` step: v0.1 has no bench target (criterion is v0.3); bench-quick runs
+      # locally, and crates/lob-bench/tests/cli.rs smoke-tests it with --runs 1
       # the committed synthetic fixture and its replay statistics must regenerate byte-identically
       - run: |
           cargo run --release -p lob-bench -- synth --seed 7 --n 100000 --out /tmp/synth_s7_100k.itch
@@ -38,7 +39,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install maturin==1.15.0 pytest numpy
+      - run: python -m pip install maturin==1.15.0 pytest numpy ruff
+      - run: ruff check python
       - run: cd python/lobcore && maturin build --release --features abi3-py311 -o ../../wheels
       - run: python -m pip install wheels/*.whl
       - run: pytest -q python/tests

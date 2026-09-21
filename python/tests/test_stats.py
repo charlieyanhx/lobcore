@@ -31,6 +31,8 @@ PINS = {
     "ec_at_head": 668,
     "unknown_type": 0,
     "no_directory": 0,
+    "placeholder_adds": 413,  # of 41,029 A + F: the generator's 1 % placeholder_rate
+    "trailing_bytes": 0,
 }
 BY_TYPE = {
     "S": 6,

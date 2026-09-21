@@ -192,4 +192,39 @@ fn hot_path_makes_zero_allocations_after_warm_up() {
     let _ = book.l1();
     let _ = book.queue_ahead(drv.live[0]);
     assert_eq!(counters(), before);
+    // same binary, same global counter: run sequentially, not as a second #[test]
+    reference_book_l1_makes_zero_allocations();
+}
+
+/// The comparator's `l1()` (the crossed-snapshot check calls it after every book change) does
+/// not allocate either: `BTreeMap::last_key_value` / `first_key_value` plus a sum over the best
+/// level's `VecDeque`. `l2` boxes an iterator and is excluded by design, like the array book's.
+/// docs/DESIGN.md section 7 quotes this check.
+fn reference_book_l1_makes_zero_allocations() {
+    use lob_core::RefBook;
+    let mut rb = RefBook::new();
+    for i in 0..500u64 {
+        let side = if i % 2 == 0 { Side::Bid } else { Side::Ask };
+        rb.add(i + 1, side, BASE + (i % 40) as i32, 1 + (i % 7) as u32)
+            .unwrap();
+    }
+    let before = counters();
+    let mut sum = 0u64;
+    for _ in 0..10_000 {
+        let (b, a) = rb.l1();
+        sum += b.map_or(0, |l| l.1 as u64) + a.map_or(0, |l| l.1 as u64);
+    }
+    assert_eq!(
+        counters(),
+        before,
+        "allocations during 10,000 RefBook::l1 calls"
+    );
+    assert!(sum > 0);
+    let before = counters();
+    let _ = rb.l2(1);
+    assert_ne!(
+        counters(),
+        before,
+        "l2 boxes an iterator and collects into Vecs"
+    );
 }

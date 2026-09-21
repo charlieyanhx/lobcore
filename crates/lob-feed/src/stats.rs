@@ -141,6 +141,9 @@ pub struct Stats {
     pub truncated: u32,
     /// The source ended mid-stream (a cut gzip member); see `FrameSource::source_cut`.
     pub source_cut: bool,
+    /// Bytes after the last gzip member that were not another member (ignored, counted); see
+    /// `FrameSource::trailing_bytes`.
+    pub trailing_bytes: u64,
     /// Bytes consumed from the (inflated) source.
     pub bytes_in: u64,
     /// Messages whose type byte is outside the size table.
@@ -181,6 +184,9 @@ pub struct Stats {
     pub bad_side: u64,
     /// Order messages for a locate with no prior `R` (a reference book is created on demand).
     pub no_directory: u64,
+    /// `A` / `F` messages whose price is a placeholder (`is_placeholder`: at or below $0.01,
+    /// at or above $199,900); they rest via the overflow map and never centre a window.
+    pub placeholder_adds: u64,
     /// `E` / `C` on a live id.
     pub ec_total: u64,
     /// Of those, the order was at the head of its level.
@@ -209,6 +215,7 @@ impl Default for Stats {
             messages: 0,
             truncated: 0,
             source_cut: false,
+            trailing_bytes: 0,
             bytes_in: 0,
             unknown_type: 0,
             by_type: [0; 256],
@@ -229,6 +236,7 @@ impl Default for Stats {
             bad_price: 0,
             bad_side: 0,
             no_directory: 0,
+            placeholder_adds: 0,
             ec_total: 0,
             ec_at_head: 0,
             locates: Vec::new(),
@@ -370,7 +378,19 @@ impl Stats {
                 ""
             }
         );
-        let _ = writeln!(o, "| inflated bytes consumed | {} |", commas(self.bytes_in));
+        let _ = writeln!(
+            o,
+            "| inflated bytes consumed | {}{} |",
+            commas(self.bytes_in),
+            if self.trailing_bytes > 0 {
+                format!(
+                    " ({} bytes after the last gzip member ignored)",
+                    commas(self.trailing_bytes)
+                )
+            } else {
+                String::new()
+            }
+        );
         let _ = writeln!(
             o,
             "| unknown message types (skipped by length) | {} |",
@@ -416,6 +436,18 @@ impl Stats {
             o,
             "| order messages without a prior R | {} |",
             commas(self.no_directory)
+        );
+        let adds = self.by_type[b'A' as usize] + self.by_type[b'F' as usize];
+        let _ = writeln!(
+            o,
+            "| adds at placeholder prices (<= $0.01 or >= $199,900) | {} of {} = {:.2} % |",
+            commas(self.placeholder_adds),
+            commas(adds),
+            if adds > 0 {
+                100.0 * self.placeholder_adds as f64 / adds as f64
+            } else {
+                0.0
+            }
         );
         let _ = writeln!(
             o,
@@ -477,7 +509,7 @@ impl Stats {
         if let Some(t) = self.timing.filter(|_| timing) {
             let _ = writeln!(
                 o,
-                "| msgs/s parse+apply{}, excluding gunzip/read | {:.2} M (wall {:.1} ms, read {:.1} ms) |",
+                "| msgs/s parse+apply{}, excluding gunzip/read | {:.2} M (parse+apply {:.1} ms, read {:.1} ms) |",
                 if self.event_logged {
                     " + event-log sha256"
                 } else {
@@ -673,12 +705,13 @@ mod tests {
         assert!(r.trim_end().ends_with(END_MARK));
         assert!(r.contains("| by type | S 1 · A 2 |"));
         assert!(r.contains("| type \\ hour | 03 | 09 | total |"));
-        assert!(
-            r.contains("| msgs/s parse+apply + event-log sha256, excluding gunzip/read | 4.00 M")
-        );
-        assert!(
-            r.contains("| msgs/s parse+apply + event-log sha256, including gunzip/read | 3.00 M")
-        );
+        // the two rows name their denominators: parse+apply = wall - read, and the gross wall
+        assert!(r.contains(
+            "| msgs/s parse+apply + event-log sha256, excluding gunzip/read | 4.00 M (parse+apply 0.8 ms, read 0.2 ms) |"
+        ));
+        assert!(r.contains(
+            "| msgs/s parse+apply + event-log sha256, including gunzip/read | 3.00 M (wall 1.0 ms) |"
+        ));
         let det = deterministic_lines(&r).unwrap();
         assert!(det.iter().all(|l| !l.contains("msgs/s")));
         s.timing = None;

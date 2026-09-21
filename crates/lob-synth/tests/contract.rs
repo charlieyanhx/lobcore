@@ -158,3 +158,91 @@ fn truth_csv_has_one_row_per_message() {
     assert_eq!(std::fs::read(&path).unwrap(), csv);
     assert_eq!(sha256(&csv), sha256(&truth_csv(&day)));
 }
+
+#[test]
+fn invalid_configs_are_named_by_check_args_before_any_generation() {
+    use lob_synth::{MAX_MSGS, check_args};
+    let ok = SynthConfig::default();
+    assert_eq!(check_args(22, &ok), Ok(()));
+    assert_eq!(check_args(MAX_MSGS, &ok), Ok(()));
+    let cases: [(&str, SynthConfig); 9] = [
+        (
+            "locates",
+            SynthConfig {
+                locates: 0,
+                ..ok.clone()
+            },
+        ),
+        (
+            "mix weights must not all be zero",
+            SynthConfig {
+                mix: [0.0; 9],
+                ..ok.clone()
+            },
+        ),
+        (
+            "mix weights must be finite",
+            SynthConfig {
+                mix: [-1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+                ..ok.clone()
+            },
+        ),
+        (
+            "mix weights must be finite",
+            SynthConfig {
+                mix: [f32::NAN; 9],
+                ..ok.clone()
+            },
+        ),
+        (
+            "placeholder_rate must be in [0, 1], got 2",
+            SynthConfig {
+                placeholder_rate: 2.0,
+                ..ok.clone()
+            },
+        ),
+        (
+            "placeholder_rate must be in [0, 1], got NaN",
+            SynthConfig {
+                placeholder_rate: f32::NAN,
+                ..ok.clone()
+            },
+        ),
+        (
+            "unknown_ref_rate must be in [0, 1], got 1.5",
+            SynthConfig {
+                unknown_ref_rate: 1.5,
+                ..ok.clone()
+            },
+        ),
+        (
+            "open_ns (10) must precede close_ns (10)",
+            SynthConfig {
+                open_ns: 10,
+                close_ns: 10,
+                ..ok.clone()
+            },
+        ),
+        (
+            "must fit 48 bits",
+            SynthConfig {
+                close_ns: 1 << 48,
+                ..ok.clone()
+            },
+        ),
+    ];
+    for (text, cfg) in cases {
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains(text), "{err:?} should contain {text:?}");
+        assert_eq!(check_args(1_000, &cfg).unwrap_err(), err);
+    }
+    assert_eq!(
+        check_args(21, &ok).unwrap_err(),
+        "n_msgs must be at least 2 * locates + 6 = 22, got 21"
+    );
+    assert!(
+        check_args(MAX_MSGS + 1, &ok)
+            .unwrap_err()
+            .contains("at most")
+    );
+}

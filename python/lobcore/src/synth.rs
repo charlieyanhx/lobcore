@@ -1,8 +1,8 @@
 //! `lobcore.synth_itch`: the seeded synthetic ITCH day as `bytes`, optionally with its truth
 //! sidecar as numpy arrays.
 
-use lob_synth::{SynthConfig, SynthDay, synth_itch as synth, synth_itch_bytes};
-use numpy::PyArray1;
+use lob_synth::{SynthConfig, SynthDay, check_args, synth_itch as synth, synth_itch_bytes};
+use numpy::{PyArray1, PyArrayMethods};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -37,9 +37,6 @@ fn config(kw: Option<&Bound<'_, PyDict>>) -> PyResult<SynthConfig> {
             }
         }
     }
-    if cfg.locates == 0 {
-        return Err(PyValueError::new_err("locates must be at least 1"));
-    }
     Ok(cfg)
 }
 
@@ -51,6 +48,8 @@ fn truth_dict<'py>(py: Python<'py>, day: &SynthDay) -> PyResult<Bound<'py, PyDic
     let mut bid_qty = Vec::with_capacity(n);
     let mut ask_px = Vec::with_capacity(n);
     let mut ask_qty = Vec::with_capacity(n);
+    let mut l5_bid = Vec::with_capacity(n * 5);
+    let mut l5_ask = Vec::with_capacity(n * 5);
     let mut live = Vec::with_capacity(n);
     let mut hashes = Vec::with_capacity(n * 32);
     for t in &day.truth {
@@ -62,6 +61,8 @@ fn truth_dict<'py>(py: Python<'py>, day: &SynthDay) -> PyResult<Bound<'py, PyDic
         bid_qty.push(bq);
         ask_px.push(ap);
         ask_qty.push(aq);
+        l5_bid.extend_from_slice(&t.l5_bid);
+        l5_ask.extend_from_slice(&t.l5_ask);
         live.push(t.live_orders);
         hashes.extend_from_slice(&t.book_hash);
     }
@@ -72,21 +73,27 @@ fn truth_dict<'py>(py: Python<'py>, day: &SynthDay) -> PyResult<Bound<'py, PyDic
     d.set_item("bid_qty", PyArray1::from_vec(py, bid_qty))?;
     d.set_item("ask_px", PyArray1::from_vec(py, ask_px))?;
     d.set_item("ask_qty", PyArray1::from_vec(py, ask_qty))?;
+    d.set_item("l5_bid", PyArray1::from_vec(py, l5_bid).reshape([n, 5])?)?;
+    d.set_item("l5_ask", PyArray1::from_vec(py, l5_ask).reshape([n, 5])?)?;
     d.set_item("live_orders", PyArray1::from_vec(py, live))?;
-    // One 32-byte digest per message as a `S32` array: sliceable, comparable to `bytes`.
-    let np = py.import("numpy")?;
-    let raw = PyArray1::from_vec(py, hashes);
-    let hash_arr = np.getattr("frombuffer")?.call1((raw, "S32"))?;
-    d.set_item("book_hash", hash_arr)?;
+    // One 32-byte digest per message as an `(n, 32)` uint8 array: `row.tobytes()` is the digest.
+    // Never an `S32` array: numpy strips trailing NUL bytes from `S` elements, so a digest ending
+    // in 0x00 (1 in 256) would come back 31 bytes long and compare unequal to the true hash.
+    d.set_item(
+        "book_hash",
+        PyArray1::from_vec(py, hashes).reshape([n, 32])?,
+    )?;
     Ok(d)
 }
 
 /// `synth_itch(seed, n, truth=False, **cfg) -> bytes | (bytes, dict)`: exactly `n` framed
 /// ITCH 5.0 messages (emi 2-byte big-endian length framing) for `(seed, cfg)`, byte-identical
 /// to `lobcore synth --seed SEED --n N`. With `truth=True` the per-message truth sidecar is
-/// returned too (`ts, locate, bid_px, bid_qty, ask_px, ask_qty, live_orders, book_hash`).
-/// Config keys: `locates, mix, placeholder_rate, unknown_ref_rate, subpenny, crossed_preopen,
-/// open_ns, close_ns`.
+/// returned too (`ts, locate, bid_px, bid_qty, ask_px, ask_qty, l5_bid, l5_ask, live_orders,
+/// book_hash`). Config keys: `locates, mix, placeholder_rate, unknown_ref_rate, subpenny,
+/// crossed_preopen, open_ns, close_ns`. Every argument is validated here (`ValueError`) before
+/// the generator runs: the extension is built with `panic = "abort"`, so a Rust panic behind
+/// this boundary would take the interpreter down instead of raising.
 #[pyfunction]
 #[pyo3(signature = (seed, n, truth = false, **cfg))]
 pub fn synth_itch<'py>(
@@ -97,12 +104,7 @@ pub fn synth_itch<'py>(
     cfg: Option<&Bound<'py, PyDict>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cfg = config(cfg)?;
-    let min = 2 * cfg.locates as u64 + 6;
-    if n < min {
-        return Err(PyValueError::new_err(format!(
-            "n must be at least 2 * locates + 6 = {min}, got {n}"
-        )));
-    }
+    check_args(n, &cfg).map_err(PyValueError::new_err)?;
     if truth {
         let day = py.detach(|| synth(seed, n, &cfg));
         let bytes = PyBytes::new(py, &day.bytes);

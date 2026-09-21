@@ -173,3 +173,51 @@ def test_gzip_input_gives_identical_rows(tmp_path, fixture_bytes):
     b = lobcore.replay_itch(gz, every_n=25)
     for k in a:
         assert np.array_equal(a[k], b[k], equal_nan=True), k
+
+
+def _frame(payload: bytes) -> bytes:
+    return len(payload).to_bytes(2, "big") + payload
+
+
+def _hdr(ty: bytes, locate: int, ts: int) -> bytes:
+    return ty + locate.to_bytes(2, "big") + (0).to_bytes(2, "big") + ts.to_bytes(6, "big")
+
+
+def _add(locate, ts, ref, side, qty, px) -> bytes:
+    return _frame(_hdr(b"A", locate, ts) + ref.to_bytes(8, "big") + side + qty.to_bytes(4, "big") + b"SYNX    " + px.to_bytes(4, "big"))
+
+
+def _delete(locate, ts, ref) -> bytes:
+    return _frame(_hdr(b"D", locate, ts) + ref.to_bytes(8, "big"))
+
+
+def _execute(locate, ts, ref, qty, match_no) -> bytes:
+    return _frame(_hdr(b"E", locate, ts) + ref.to_bytes(8, "big") + qty.to_bytes(4, "big") + match_no.to_bytes(8, "big"))
+
+
+def test_rejected_messages_do_not_emit_rows_or_advance_the_cadence(tmp_path):
+    """The docstring says rows come per *book-changing* message: an order message the book
+    rejected (unknown id, duplicate id, over-execute, bad side) leaves the book unchanged and so
+    neither emits a row nor counts toward `every_n`; `replay_stats` counts it instead."""
+    stream = b"".join([
+        _add(5, 100, 1, b"B", 100, 1_000_000),  # accepted           -> row
+        _delete(5, 200, 999),                    # unknown id         -> no row
+        _add(5, 300, 1, b"S", 50, 1_000_100),    # duplicate id       -> no row
+        _add(5, 400, 2, b"X", 50, 1_000_100),    # bad side byte      -> no row
+        _execute(5, 500, 1, 150, 1),             # over-execute (100) -> no row
+        _add(5, 600, 2, b"S", 50, 1_000_100),    # accepted           -> row
+        _execute(5, 700, 1, 100, 2),             # accepted, fills 1  -> row
+    ])  # fmt: skip
+    p = tmp_path / "rejects.itch"
+    p.write_bytes(stream)
+    r = lobcore.replay_itch(p, every_n=1)
+    assert r["ts"].tolist() == [100, 600, 700]
+    assert r["bid_qty"].tolist() == [100, 100, 0] and r["ask_qty"].tolist() == [0, 50, 50]
+    # every_n=2 counts the three accepted messages only: one row, at the second of them
+    assert lobcore.replay_itch(p, every_n=2)["ts"].tolist() == [600]
+    assert lobcore.replay_itch(p, every_n=3)["ts"].tolist() == [700]
+    # every_ns measures the gap from the last emitted row on book-changing messages only
+    assert lobcore.replay_itch(p, every_ns=450)["ts"].tolist() == [100, 600]
+    st = lobcore.replay_stats(p)
+    assert (st["unknown_id"], st["duplicate_id"], st["bad_side"], st["over_execute"]) == (1, 1, 1, 1)
+    assert st["no_directory"] == 1 and st["live"] == 1

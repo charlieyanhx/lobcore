@@ -102,13 +102,10 @@ pub fn synth(a: &SynthArgs) -> Result<i32, Error> {
         locates: a.locates,
         ..Default::default()
     };
-    let min = 2 * a.locates as u64 + 6;
-    if a.n < min {
-        return Err(Error(format!(
-            "--n must be at least 2 * locates + 6 = {min}, got {}",
-            a.n
-        )));
-    }
+    // `lob-synth` panics on bad arguments (and this binary is `panic = "abort"`): reject here
+    // with the `lobcore: <message>` / exit 1 contract instead. `--locates 0` and `--n` below
+    // `2 * locates + 6` are the two reachable cases.
+    lob_synth::check_args(a.n, &cfg).map_err(|e| Error(format!("--{e}")))?;
     let day = synth_itch(a.seed, a.n, &cfg);
     std::fs::write(&a.out, &day.bytes)?;
     if let Some(t) = &a.truth {

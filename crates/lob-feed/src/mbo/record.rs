@@ -40,7 +40,8 @@ pub enum DbnError {
     BadMagic,
     /// The metadata length runs past the end of the input.
     Metadata { len: u32, have: usize },
-    /// A record's length byte says more bytes than remain, or zero.
+    /// A record's length byte says more bytes than remain, or zero. `at` is the offending
+    /// record's byte offset within the record area (after the header and metadata).
     Record { at: usize, len: usize, have: usize },
 }
 
@@ -255,9 +256,10 @@ impl Iterator for Records<'_> {
         }
         let len = rest[0] as usize * 4;
         if len == 0 || len > rest.len() {
+            let at = self.pos; // the offending record's offset, not the end of the record area
             self.pos = self.bytes.len();
             return Some(Err(DbnError::Record {
-                at: self.pos,
+                at,
                 len,
                 have: rest.len(),
             }));
@@ -351,10 +353,32 @@ mod tests {
             bytes: &[3, 0xA0, 1],
             pos: 0,
         };
-        assert!(matches!(
+        assert_eq!(
             r.next(),
-            Some(Err(DbnError::Record { len: 12, .. }))
-        ));
+            Some(Err(DbnError::Record {
+                at: 0,
+                len: 12,
+                have: 3
+            }))
+        );
+        assert!(r.next().is_none());
+        // one whole 16-byte record then 4 dangling bytes: `at` is the dangling record's offset
+        let mut body = vec![4u8, 0x01];
+        body.extend_from_slice(&[0u8; 14]);
+        body.extend_from_slice(&[14, 1, 0, 0]);
+        let mut r = Records {
+            bytes: &body,
+            pos: 0,
+        };
+        assert_eq!(r.next(), Some(Ok(Record::Other { rtype: 1, len: 16 })));
+        assert_eq!(
+            r.next(),
+            Some(Err(DbnError::Record {
+                at: 16,
+                len: 56,
+                have: 4
+            }))
+        );
         assert!(r.next().is_none());
     }
 }

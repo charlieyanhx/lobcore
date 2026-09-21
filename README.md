@@ -1,7 +1,6 @@
 # lobcore
 
 [![ci](https://github.com/charlieyanhx/lobcore/actions/workflows/ci.yml/badge.svg)](https://github.com/charlieyanhx/lobcore/actions/workflows/ci.yml)
-![rust 1.98](https://img.shields.io/badge/rust-1.98-orange)
 ![python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -15,10 +14,12 @@ level (no scan on depletion), 24-byte order slots in a slab with intrusive FIFO 
 window and speed only does. It is justified against a `BTreeMap` + `VecDeque` reference book
 with the identical API on the same stream: on the committed 100,000-message synthetic day the
 array book parses and applies 9.15 M msgs/s against the reference book's 4.80 M, a 1.90x
-ratio, as the median of 5 fresh-process runs on an Apple M1 with `-C target-cpu=apple-m1`
+ratio of medians over 5 fresh-process runs on an Apple M1 with `-C target-cpu=apple-m1`
 (min-max 3.34-11.47 M and 3.68-5.44 M; the run's 1-minute load average was 15.15, far above
-the harness's 1.0 gate, so read the ratio, not the absolute, until an idle re-measurement
-lands). What is tested: the array book and the reference book return identical events after
+the harness's 1.0 gate, and repeated batches under load moved the ratio between 1.41x and
+2.80x, so neither the absolutes nor the ratio is a result yet, only the ordering: the array
+book was faster in every run of every batch, and an idle re-measurement is owed). What is
+tested: the array book and the reference book return identical events after
 every operation and identical snapshots every 64 operations over proptest sequences; a
 counting global allocator sees 0 allocations over 900,000 in-window messages; the event log
 and book-state hashes are reproduced by a stdlib-only Python reference on the fixture; the
@@ -30,13 +31,13 @@ system.
 
 ```sh
 export PATH=$HOME/.cargo/bin:$PATH          # rust 1.98.1 pinned by rust-toolchain.toml
-cargo test --workspace                     # 97 tests (+1 ignored real-data test), 38 s wall on the M1 under load
+cargo test --workspace                     # 103 tests (+1 ignored real-data test), 46 s wall on the M1 under load
 cargo run --release -p lob-bench -- synth --seed 7 --n 100000 --out /tmp/s7.itch   # byte-equals tests/fixtures/synth_s7_100k.itch
 cargo run --release -p lob-bench -- replay --stats tests/fixtures/synth_s7_100k.itch
 cargo run --release -p lob-bench -- bench-quick tests/fixtures/synth_s7_100k.itch   # 5 fresh runs, preflight, load gate
 python -m venv .venv && .venv/bin/pip install maturin==1.15.0 pytest numpy
 cd python/lobcore && ../../.venv/bin/maturin develop --release && cd ../..
-.venv/bin/pytest -q                        # 37 tests: hash parity, book oracles, replay, stats, stub sync, README wording
+.venv/bin/pytest -q                        # 53 tests: hash parity, synth truth per row, book oracles, replay, stats, stub sync, README wording
 scripts/fetch_itch.sh                      # local only: the md5-pinned 50 MB prefix of the public Nasdaq sample
 cargo test -p lob-feed --release --test real_head -- --ignored   # replays it: 4,330,712 messages, unknown-id 0
 ```
@@ -80,6 +81,7 @@ rows to stdout for the run at hand, and the Throughput section is the benchmark.
 | system events | O@08:41:15.000000000 S@08:41:15.000000000 Q@09:30:00.000000000 M@16:00:00.000000000 E@16:00:00.000000000 C@16:00:00.000000000 |
 | locates with a book | 8 (0 array, 8 reference); watchlist: none; array window 2048 levels/side |
 | order messages without a prior R | 0 |
+| adds at placeholder prices (<= $0.01 or >= $199,900) | 413 of 41,029 = 1.01 % |
 | live orders: high-water mark / at close | 3,657 / 3,649 |
 | crossed snapshots before Q | 9,819 |
 | crossed snapshots after Q (all / trading-state T) | 0 / 0 |
@@ -127,9 +129,11 @@ it to 128,451,559 bytes = 4,330,712 complete messages plus a 13-byte tail (`gzip
 999 bytes earlier at 128,450,560 B / 4,330,679 messages because it discards the incomplete
 final deflate block; lobcore ships flate2 with the zlib-rs backend and reports the zlib
 figure). Machine: MacBookPro17,1 / Apple M1 (4P + 4E), 8 GB, macOS 26.0.1 (25A362), rustc
-1.98.1, `-C target-cpu=apple-m1`, 1-minute load average 12.2 at the time of the run (other
-processes active, so the msgs/s rows are indicative only). Command:
-`lobcore replay --stats data/itch_12302019_head50m.gz --symbol AAPL --symbol MSFT --symbol QQQ --symbol SPY`.
+1.98.1, `-C target-cpu=apple-m1`. Command:
+`lobcore replay --stats data/itch_12302019_head50m.gz --symbol AAPL --symbol MSFT --symbol QQQ --symbol SPY`;
+every count and hash below is also asserted, literal for literal, by
+`cargo test -p lob-feed --release --test real_head -- --ignored`. The "crossed snapshots" rows
+count `bid >= ask` after a book change (locked or crossed; pre-open books are).
 
 | replay | value |
 |---|---|
@@ -143,6 +147,7 @@ processes active, so the msgs/s rows are indicative only). Command:
 | system events | O@03:04:32.057543747 S@04:00:00.000198145 |
 | locates with a book | 8,906 (4 array, 8902 reference); watchlist: AAPL MSFT QQQ SPY; array window 2048 levels/side |
 | order messages without a prior R | 0 |
+| adds at placeholder prices (<= $0.01 or >= $199,900) | 15,232 of 1,768,698 = 0.86 % |
 | live orders: high-water mark / at close | 145,701 / 145,691 |
 | crossed snapshots before Q | 21 |
 | crossed snapshots after Q (all / trading-state T) | 0 / 0 |
@@ -152,8 +157,6 @@ processes active, so the msgs/s rows are indicative only). Command:
 | E/C at level head | 17,789 / 17,789 = 1.0000 |
 | event log | 4,085,484 records, sha256 `3514db25d5e09cee6e05240eaa29d88ef554670e0402cac0a6e03ce5c61362f6` |
 | close book-state hash, all locates | `19a984f0d6d7742eb9ae27185cdc006bbae7ceccef9dc96c804babe3a7cba584` |
-| msgs/s parse+apply + event-log sha256, excluding gunzip/read | 1.55 M (wall 2790.6 ms, read 480.6 ms) |
-| msgs/s parse+apply + event-log sha256, including gunzip/read | 1.32 M (wall 3271.2 ms) |
 
 | type \ hour | 03 | 04 | 05 | 06 | 07 | 08 | 09 | total |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -184,6 +187,13 @@ The pre-open drift is the v0.2 re-centring input: the 2048-level window centred 
 symbol's first real add saw its real prices wander 20,261-71,034 ticks away (MSFT's window
 bottomed out at $0.01), and 148-2,446 adds per symbol went to the overflow map.
 
+The same command prints two msgs/s rows for the run at hand, which are not in the block above
+because they are single-run numbers: the run that produced the block read 1.86 M msgs/s
+excluding gunzip/read (parse+apply + event-log sha256 2,334.1 ms, read 402.9 ms) and 1.58 M
+including it (wall 2,736.9 ms), at a 1-minute load average of 11.7 with other processes
+active; indicative only. Inflate is ~15 % of the wall here; the incremental sha256 and
+parse+apply are the rest (Throughput section).
+
 ## Throughput
 
 `lobcore bench-quick tests/fixtures/synth_s7_100k.itch --runs 5`: the fixture is inflated into
@@ -195,7 +205,12 @@ hw.cachelinesize 128, hw.perflevel0.l2cachesize 12,582,912, memory 8,589,934,592
 24,000,000 Hz (Instant tick 41.667 ns), affinity none (thread_policy_set is KERN_NOT_SUPPORTED
 on Apple Silicon), no QoS request in v0.1. **Load gate: the 1-minute load average was 15.15
 against the harness's 1.0 limit (other processes were running), so `--out` would have refused
-to persist this table; the ratio between rows is the robust result, the absolutes are not.**
+to persist this table. Nothing in it was measured under the gate, and the ratio is not more
+robust than the absolutes: six 5-run batches under load (9-39) gave ratios of medians from
+1.41x to 2.80x, the same 2x spread as the array row's medians. What survived every batch is
+the ordering (array > reference in every run). `bench-quick` now prints the min / median / max
+of the per-run paired ratio (run i array over run i reference) so the next, idle,
+measurement quotes that; docs/DESIGN.md section 7.**
 
 | mode | messages | runs | median msgs/s | min - max msgs/s | median ns/msg |
 |---|---:|---:|---:|---|---:|
@@ -205,8 +220,9 @@ to persist this table; the ratio between rows is the robust result, the absolute
 | parse+apply, ArrayBook watchlist + event-log sha256 | 100,000 | 5 | 3.30 M | 3.04 - 4.78 M | 302.7 |
 
 ArrayBook / RefBook parse+apply ratio of the medians: 1.90x (all 8 locates on the array book,
-window 2048 levels/side). The incremental sha256 of the 34-byte event record costs more per
-message than the book operation, which is why the stats block's msgs/s rows carry the
+window 2048 levels/side; the per-run paired ratio was not computed for this batch). The
+incremental sha256 of the 34-byte event record costs more per message than the book operation
+(302.7 - 109.3 = 193 ns against 109.3 ns), which is why the stats block's msgs/s rows carry the
 "+ event-log sha256" label and the bench reports both. Per-message percentiles (K-batch
 hdrhistogram, LATENCY.md) are v0.3; a single Instant tick is 41.667 ns on this machine, so no
 per-operation tail is quoted here.
@@ -237,7 +253,20 @@ Tested:
   5,000-op `ops.bin` digests the same way).
 - Truth after every message: the synthetic day replays to its sidecar's best bid/ask, L5, live
   count and book hash after each of its 100,000 messages, on both book kinds and on seeds 1-3
-  with stale references injected (crates/lob-feed/tests/synth_replay.rs).
+  with stale references injected (crates/lob-feed/tests/synth_replay.rs); from Python,
+  `synth_itch(..., truth=True)` hands the same sidecar back as numpy arrays (the hash column
+  is an `(n, 32)` uint8 array, never an `S32` array that would strip a trailing NUL byte from
+  1 digest in 256) and python/tests/test_synth.py checks every one of the 100,000 rows.
+- Rejected messages are counted, not applied: a duplicate id, unknown reference, over-execute
+  or bad side byte leaves the book unchanged, emits no `replay_itch` row, does not advance
+  `every_n`, does not count as an execution in the E/C-at-head fraction and never centres a
+  watched locate's array window (crates/lob-feed/tests/session_semantics.rs,
+  python/tests/test_replay.py).
+- No panic behind the Python boundary: the wheel is built with `panic = "abort"`, so every
+  `synth_itch` argument is validated first and an invalid one raises `ValueError`
+  (python/tests/test_synth.py); the CLI maps the same check to `lobcore: ...` / exit 1.
+- gzip by magic, not by name: `open` sniffs `1f 8b`, decodes every member, and counts (rather
+  than fails on) bytes after the last member (crates/lob-feed/src/itch/frame.rs tests).
 - Byte oracles: the ITCH `A` message hex, the real sample's first frame, every type at its
   spec length and rejected at length-1, the 56-byte DBN MBO record round-trip on the two
   vendored stubs, the 34-byte event record hex, the empty-book hash = sha256 of nothing.
@@ -266,6 +295,7 @@ By construction (not a test):
 lobcore/
 ├── Cargo.toml                  # workspace: pinned deps, release lto=fat, dev opt-level=3 for sha2 and lob-synth
 ├── rust-toolchain.toml         # 1.98.1 + clippy + rustfmt
+├── ruff.toml                   # the CONVENTIONS ruff settings for python/tests (python/lobcore/pyproject.toml has the same)
 ├── .cargo/config.toml          # -C target-cpu=apple-m1 on aarch64-apple-darwin only
 ├── crates/
 │   ├── lob-core/               # ArrayBook, RefBook, OrderBook trait, Event / EventLog, book-state hash, ops.bin
@@ -273,18 +303,18 @@ lobcore/
 │   │   └── tests/              # oracles, differential proptest, ops_seed7 pins (+ ops_pyref.py), alloc_count
 │   ├── lob-feed/               # ITCH framing (plain / gz), borrowed message views, Session, stats block, DBN MBO decoder
 │   │   ├── src/itch/{frame,msg,apply}.rs  src/mbo/record.rs  src/stats.rs
-│   │   └── tests/              # itch_bytes, synth_replay (truth after every message), dbn stubs, alloc_count, real_head (#[ignore])
+│   │   └── tests/              # itch_bytes, synth_replay (truth after every message), session_semantics, dbn stubs, alloc_count, real_head (#[ignore])
 │   ├── lob-synth/              # seeded synthetic ITCH day + truth sidecar; examples/write_fixture.rs
 │   ├── lob-features/           # wmid (exact rationals), imb1 / imb5, spread, depth5, CKS OFI
-│   └── lob-bench/              # bin `lobcore`: replay --stats [--write-readme|--check-readme], synth, bench-quick, preflight
+│   └── lob-bench/              # bin `lobcore`: replay --stats [--write-readme|--check-readme], synth, bench-quick (preflight.rs prints the machine block)
 ├── python/
 │   ├── lobcore/                # PyO3 0.29 abi3-py311 crate: Book, RefBook, replay_itch, replay_stats, synth_itch; lobcore.pyi
-│   └── tests/                  # test_hash_parity, test_book, test_replay, test_stats, test_stub, test_readme_wording
+│   └── tests/                  # test_hash_parity, test_synth, test_book, test_replay, test_stats, test_stub, test_readme_wording
 ├── tests/fixtures/             # synth_s7_100k.itch (2,968,812 B) + .sha256 sidecar (bytes and truth CSV)
 ├── scripts/fetch_itch.sh       # md5-pinned 50 MB range download of the public Nasdaq sample (local only)
 ├── docs/{PLAN,DESIGN}.md       # plan v2 (the contract) and the engineering note
 ├── NOTICE                      # the two Apache-2.0 DBN stubs, with repo + commit + sha256
-└── .github/workflows/ci.yml    # fmt, clippy -D warnings, tests (PROPTEST_CASES=64), bench --no-run, fixture + README regeneration, wheels + pytest
+└── .github/workflows/ci.yml    # fmt, clippy -D warnings, tests (PROPTEST_CASES=64), fixture + README regeneration, wheels + ruff + pytest
 ```
 
 ## Roadmap
@@ -299,7 +329,8 @@ lobcore/
   the quotesim adapter (`Book` + `l2` + `queue_ahead` with a latency parameter), and the
   write-up "A bounded-array order book in Rust: design, measurements, and what I left out".
 - Not planned: kernel bypass, FPGA parsing, feed arbitration, thread pinning, exchange
-  conformance (docs/DESIGN.md section 8).
+  conformance (docs/DESIGN.md section 8). Not in 0.1.0 either: a cargo-deny licence check
+  (NOTICE lists the dependency licences by hand).
 
 ## Data and privacy
 

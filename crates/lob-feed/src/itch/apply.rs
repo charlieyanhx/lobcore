@@ -10,12 +10,15 @@
 //!
 //! Books: every locate starts as a `RefBook` when its `R` arrives (or on demand for an order
 //! message without a directory entry, which is counted). A locate on the watchlist is migrated
-//! to an `ArrayBook` at its first non-placeholder add: the window of `array_window` levels is
-//! centred on that price (tick 0.01 at or above $1, 0.0001 below), the few resting placeholder
-//! orders are re-added in FIFO order, and from then on every operation is allocation-free
-//! while it stays inside the window (the overflow map is the documented allocating path and
-//! its hits are published per locate). Anything not on the watchlist runs the reference book;
-//! a full-market array window does not fit in 8 GB.
+//! to an `ArrayBook` right after its first *accepted* non-placeholder add or replace: the
+//! window of `array_window` levels is centred on that price with the tick of [`tick_for`]
+//! (0.01 at or above $1 and for a sub-dollar price on the 1c grid, 0.0001 for a sub-dollar
+//! price off it), the resting orders (the new one and any placeholders) are re-added in FIFO
+//! order, and from then on every operation is allocation-free while it stays inside the
+//! window (the overflow map is the documented allocating path and its hits are published per
+//! locate). A rejected message (duplicate id, unknown reference, bad qty / price) never
+//! centres a window or moves the published max |offset|. Anything not on the watchlist runs
+//! the reference book; a full-market array window does not fit in 8 GB.
 //!
 //! Every book call's result is logged (`Event` or `BookError::event`) into one `EventLog`, so
 //! the event-log hash covers rejections too. Live-order counts are tracked from the returned
@@ -275,6 +278,7 @@ impl Session {
         debug_assert_eq!(self.stats.messages, src.frames());
         self.stats.truncated = src.truncated();
         self.stats.source_cut = src.source_cut();
+        self.stats.trailing_bytes = src.trailing_bytes();
         self.stats.bytes_in = src.bytes_in();
         self.stats.timing = Some(Timing {
             wall_ns,
@@ -292,8 +296,9 @@ impl Session {
         Ok(())
     }
 
-    /// Apply one parsed message.
-    pub fn apply_msg(&mut self, m: Msg<'_>) {
+    /// Apply one parsed message; `true` when a book changed (an order message the book
+    /// accepted), `false` for every other message and for a rejected or dropped order message.
+    pub fn apply_msg(&mut self, m: Msg<'_>) -> bool {
         let ty = m.ty();
         self.stats.messages += 1;
         self.stats.by_type[ty as usize] += 1;
@@ -319,19 +324,25 @@ impl Session {
                 self.stats.locates[l as usize].h_state = h.trading_state();
                 self.stats.locates[l as usize].msgs += 1;
             }
-            Msg::Add(a) => self.add(a.locate(), a.order_ref(), a.side(), a.price(), a.shares()),
-            Msg::AddMpid(f) => self.add(f.locate(), f.order_ref(), f.side(), f.price(), f.shares()),
-            Msg::Exec(e) => self.execute(e.locate(), e.order_ref(), e.executed()),
-            Msg::ExecPx(c) => self.execute(c.locate(), c.order_ref(), c.executed()),
-            Msg::Cancel(x) => self.cancel(x.locate(), x.order_ref(), x.cancelled()),
-            Msg::Delete(d) => self.delete(d.locate(), d.order_ref()),
-            Msg::Replace(u) => self.replace(
-                u.locate(),
-                u.original_ref(),
-                u.new_ref(),
-                u.price(),
-                u.shares(),
-            ),
+            Msg::Add(a) => {
+                return self.add(a.locate(), a.order_ref(), a.side(), a.price(), a.shares());
+            }
+            Msg::AddMpid(f) => {
+                return self.add(f.locate(), f.order_ref(), f.side(), f.price(), f.shares());
+            }
+            Msg::Exec(e) => return self.execute(e.locate(), e.order_ref(), e.executed()),
+            Msg::ExecPx(c) => return self.execute(c.locate(), c.order_ref(), c.executed()),
+            Msg::Cancel(x) => return self.cancel(x.locate(), x.order_ref(), x.cancelled()),
+            Msg::Delete(d) => return self.delete(d.locate(), d.order_ref()),
+            Msg::Replace(u) => {
+                return self.replace(
+                    u.locate(),
+                    u.original_ref(),
+                    u.new_ref(),
+                    u.price(),
+                    u.shares(),
+                );
+            }
             Msg::Trade(_) | Msg::Cross(_) | Msg::Broken(_) | Msg::Other(_) => {
                 if let Some(l) = m.locate()
                     && (l as usize) < self.stats.locates.len()
@@ -341,6 +352,7 @@ impl Session {
             }
             Msg::Unknown(_) => self.stats.unknown_type += 1,
         }
+        false
     }
 
     /// Fill close hashes, per-locate close state and the event-log digest. Idempotent.
@@ -428,8 +440,9 @@ impl Session {
             .book()
     }
 
-    /// For a watched locate: migrate from the reference book to an array window centred on
-    /// `px` at the first real add, then track the largest real |tick offset|.
+    /// For a watched locate, after an accepted add / replace at the non-placeholder price
+    /// `px`: migrate from the reference book to an array window centred on `px` (the first
+    /// such price), then track the largest real |tick offset|.
     #[inline]
     fn ensure_array(&mut self, locate: u16, px: Px) {
         let i = locate as usize;
@@ -454,6 +467,8 @@ impl Session {
             ArrayBook::with_capacity(BookConfig::new(base, n, tick), self.cfg.array_reserve);
         for (side, lvl_px, fifo) in rb.snapshot() {
             for (id, qty) in fifo {
+                // resting placeholders land in the overflow map (hits counted, exactly as
+                // before this change); the centring order itself is in-window
                 ab.add(id, side, lvl_px, qty)
                     .expect("re-adding a resting order into an empty array book");
             }
@@ -521,64 +536,78 @@ impl Session {
         }
     }
 
-    fn add(&mut self, locate: u16, id: OrderId, side: Option<Side>, px: u32, qty: Qty) {
+    /// Each handler returns `true` when the book changed (the message was applied, not
+    /// rejected or dropped), which is what a sampler means by "book-changing message".
+    fn add(&mut self, locate: u16, id: OrderId, side: Option<Side>, px: u32, qty: Qty) -> bool {
         self.ensure_book(locate);
+        if is_placeholder(px) {
+            self.stats.placeholder_adds += 1;
+        }
         let Some(side) = side else {
             self.stats.bad_side += 1;
-            return;
+            return false;
         };
+        let r = self.book_mut(locate).add(id, side, px as Px, qty);
+        if self.record(locate, r).is_none() {
+            return false;
+        }
         if !is_placeholder(px) {
             self.ensure_array(locate, px as Px);
         }
-        let r = self.book_mut(locate).add(id, side, px as Px, qty);
-        if self.record(locate, r).is_some() {
-            self.check_crossed(locate);
-        }
+        self.check_crossed(locate);
+        true
     }
 
-    fn execute(&mut self, locate: u16, id: OrderId, qty: Qty) {
+    fn execute(&mut self, locate: u16, id: OrderId, qty: Qty) -> bool {
         self.ensure_book(locate);
         let book = self.book_mut(locate);
         let ahead = book.queue_ahead(id);
         let r = book.execute(id, qty);
-        if let Some(ahead) = ahead {
-            self.stats.ec_total += 1;
-            if ahead == 0 {
-                self.stats.ec_at_head += 1;
-            }
+        if self.record(locate, r).is_none() {
+            return false;
         }
-        if self.record(locate, r).is_some() {
-            self.check_crossed(locate);
+        // E/C-at-head is a fraction of *executions*: a rejected over-execute is not one
+        self.stats.ec_total += 1;
+        if ahead == Some(0) {
+            self.stats.ec_at_head += 1;
         }
+        self.check_crossed(locate);
+        true
     }
 
-    fn cancel(&mut self, locate: u16, id: OrderId, qty: Qty) {
+    fn cancel(&mut self, locate: u16, id: OrderId, qty: Qty) -> bool {
         self.ensure_book(locate);
         let r = self.book_mut(locate).cancel(id, qty);
-        if let Some(ev) = self.record(locate, r) {
-            if ev.qty < qty as u64 {
-                self.stats.over_cancel += 1;
-            }
-            self.check_crossed(locate);
+        let Some(ev) = self.record(locate, r) else {
+            return false;
+        };
+        if ev.qty < qty as u64 {
+            self.stats.over_cancel += 1;
         }
+        self.check_crossed(locate);
+        true
     }
 
-    fn delete(&mut self, locate: u16, id: OrderId) {
+    fn delete(&mut self, locate: u16, id: OrderId) -> bool {
         self.ensure_book(locate);
         let r = self.book_mut(locate).delete(id);
-        if self.record(locate, r).is_some() {
-            self.check_crossed(locate);
+        if self.record(locate, r).is_none() {
+            return false;
         }
+        self.check_crossed(locate);
+        true
     }
 
-    fn replace(&mut self, locate: u16, old: OrderId, new: OrderId, px: u32, qty: Qty) {
+    fn replace(&mut self, locate: u16, old: OrderId, new: OrderId, px: u32, qty: Qty) -> bool {
         self.ensure_book(locate);
+        let r = self.book_mut(locate).replace(old, new, px as Px, qty);
+        if self.record(locate, r).is_none() {
+            return false;
+        }
         if !is_placeholder(px) {
             self.ensure_array(locate, px as Px);
         }
-        let r = self.book_mut(locate).replace(old, new, px as Px, qty);
-        if self.record(locate, r).is_some() {
-            self.check_crossed(locate);
-        }
+        self.check_crossed(locate);
+        true
     }
 }

@@ -1,0 +1,8 @@
+# Same settings as python/lobcore/pyproject.toml [tool.ruff] (CONVENTIONS.md); this file makes
+# `ruff check python` resolve to them for python/tests too, instead of to whatever pyproject
+# sits above the checkout.
+line-length = 120
+
+[lint]
+select = ["E", "F", "I", "W", "B"]
+ignore = ["E501"]

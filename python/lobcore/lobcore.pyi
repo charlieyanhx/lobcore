@@ -1,8 +1,8 @@
 """Type stubs for the `lobcore` extension module (hand-written; keep in sync with src/*.rs).
 
 Prices are ``int`` in 1e-4 units (ITCH Price(4)), quantities are shares, timestamps are ns
-since midnight. An event is ``(kind, a, b, px, qty, side)`` with ``kind`` one of the names in
-``EVENT_KINDS`` and ``side`` 0 = bid / 1 = ask (the 34-byte record fields of the event-log
+since midnight. An event is ``(kind, a, b, px, qty, side)`` with ``kind`` one of the ``EventKind``
+literals below and ``side`` 0 = bid / 1 = ask (the 34-byte record fields of the event-log
 hash contract).
 """
 
@@ -132,5 +132,6 @@ def synth_itch(
     close_ns: int = ...,
 ) -> bytes | tuple[bytes, dict[str, NDArray[Any]]]:
     """Exactly ``n`` framed ITCH 5.0 messages for ``(seed, cfg)``; with ``truth=True`` also the
-    per-message truth sidecar (``ts, locate, bid_px, bid_qty, ask_px, ask_qty, live_orders,
-    book_hash (S32)``)."""
+    per-message truth sidecar: ``ts u64, locate u16, bid_px i32, bid_qty u32, ask_px i32,
+    ask_qty u32, l5_bid (n, 5) u32, l5_ask (n, 5) u32, live_orders u32, book_hash (n, 32) u8``
+    (``book_hash[i].tobytes()`` is the 32-byte digest). Invalid arguments raise ``ValueError``."""

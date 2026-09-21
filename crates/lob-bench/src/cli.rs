@@ -18,8 +18,9 @@ pub enum Command {
     Replay(ReplayArgs),
     /// Write a seeded synthetic ITCH day (and optionally its truth sidecar).
     Synth(SynthArgs),
-    /// Quick throughput bench: parse-only, parse+apply array, parse+apply reference; 5 fresh
-    /// processes, median with min-max, machine preflight, load gate.
+    /// Quick throughput bench in four modes: parse-only, parse+apply array, parse+apply
+    /// reference, array + event-log sha256; 5 fresh processes, median with min-max and the
+    /// per-run paired array/reference ratio, machine preflight, load gate.
     BenchQuick(BenchQuickArgs),
     /// One timed pass in this process (spawned by bench-quick).
     #[command(hide = true)]

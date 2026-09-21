@@ -27,6 +27,8 @@ const MPID: &[u8; 4] = b"SYNM";
 const PLACEHOLDER_BID: i32 = 100; // $0.01
 const PLACEHOLDER_ASK: i32 = 1_999_999_900; // $199,999.99
 const MAX_OFFSET_TICKS: i32 = 15;
+/// Upper bound on the bytes reserved up front for the output and the truth (1 GiB each).
+const RESERVE_CAP: usize = 1 << 30;
 const CROSS_PROB: f64 = 0.3;
 const MID_STEP_PROB: f64 = 0.15;
 const ROUND_LOT_PROB: f64 = 0.8;
@@ -77,14 +79,10 @@ pub(crate) struct Generator<'a> {
 
 impl<'a> Generator<'a> {
     pub(crate) fn new(seed: u64, cfg: &'a SynthConfig, want_truth: bool, n_msgs: u64) -> Self {
-        assert!(cfg.locates >= 1, "at least one locate");
-        assert!(cfg.open_ns < cfg.close_ns, "open_ns must precede close_ns");
-        assert!(cfg.close_ns < (1u64 << 48), "close_ns must fit u48");
+        if let Err(e) = crate::check_args(n_msgs, cfg) {
+            panic!("lob-synth: {e}");
+        }
         let total: f64 = cfg.mix.iter().map(|w| f64::from(*w)).sum();
-        assert!(
-            total > 0.0 && cfg.mix.iter().all(|w| *w >= 0.0),
-            "mix weights"
-        );
         let mut cum = [0f64; 9];
         let mut acc = 0.0;
         for (c, w) in cum.iter_mut().zip(cfg.mix.iter()) {
@@ -95,12 +93,22 @@ impl<'a> Generator<'a> {
         let locs = (1..=cfg.locates)
             .map(|i| new_locate(&mut rng, cfg, i))
             .collect();
-        let cap = usize::try_from(n_msgs).unwrap_or(0).saturating_mul(32);
+        // reserve ~32 B/message up front, capped so a huge `n` grows instead of failing at once
+        let cap = usize::try_from(n_msgs)
+            .unwrap_or(0)
+            .saturating_mul(32)
+            .min(RESERVE_CAP);
         Self {
             rng,
             cfg,
             out: Vec::with_capacity(cap),
-            truth: want_truth.then(|| Vec::with_capacity(usize::try_from(n_msgs).unwrap_or(0))),
+            truth: want_truth.then(|| {
+                Vec::with_capacity(
+                    usize::try_from(n_msgs)
+                        .unwrap_or(0)
+                        .min(RESERVE_CAP / std::mem::size_of::<Truth>()),
+                )
+            }),
             locs,
             cum,
             next_ref: 1,
@@ -116,11 +124,7 @@ impl<'a> Generator<'a> {
     pub(crate) fn run(mut self, n_msgs: u64) -> SynthDay {
         let locates = u64::from(self.cfg.locates);
         let fixed = 2 + 2 * locates + 1 + 3;
-        assert!(
-            n_msgs >= fixed,
-            "n_msgs must be at least {fixed} for {locates} locates"
-        );
-        let mix_budget = n_msgs - fixed;
+        let mix_budget = n_msgs - fixed; // `new` checked n_msgs >= fixed
         let span = self.cfg.close_ns - self.cfg.open_ns;
         let t0 = self.cfg.open_ns.saturating_sub(span / 8);
         self.ts = t0;

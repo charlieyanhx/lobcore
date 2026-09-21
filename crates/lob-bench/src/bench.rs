@@ -1,7 +1,10 @@
-//! `lobcore bench-quick`: messages per second for three modes over `runs` fresh processes
-//! (interleaved parse / array / ref, so drift hits every mode alike), reported as the median
-//! with min-max. The input is inflated into memory once per process, so every number excludes
-//! gunzip and file I/O. `bench-once` is the child.
+//! `lobcore bench-quick`: messages per second for four modes (parse only, parse+apply on the
+//! array book, parse+apply on the reference book, array book + event-log sha256) over `runs`
+//! fresh processes (modes interleaved run by run, so drift hits every mode alike), reported as
+//! the median with min-max, plus the array / reference ratio both as a ratio of medians and as
+//! the min / median / max of the per-run paired ratios (run i array over run i reference). The
+//! input is inflated into memory once per process, so every number excludes gunzip and file
+//! I/O. `bench-once` is the child.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -176,8 +179,26 @@ pub fn summarise(results: &[OnceResult]) -> Vec<ModeSummary> {
         .collect()
 }
 
-/// Markdown table of the summaries plus the array / reference ratio.
-pub fn render_table(sum: &[ModeSummary], source: &str, window: u32, watchlist: &str) -> String {
+/// Per-run paired ratios array / reference: run i of the array mode over run i of the
+/// reference mode, in run order (the two modes ran back to back in that run, so a load spike
+/// hits both). Empty when either mode is missing.
+pub fn paired_ratios(results: &[OnceResult]) -> Vec<f64> {
+    let arr = results.iter().filter(|r| r.mode == Mode::Array);
+    let rf = results.iter().filter(|r| r.mode == Mode::Ref);
+    arr.zip(rf)
+        .map(|(a, r)| a.msgs_per_s() / r.msgs_per_s())
+        .collect()
+}
+
+/// Markdown table of the summaries plus the array / reference ratio (of the medians, and the
+/// min / median / max of the per-run paired ratios).
+pub fn render_table(
+    sum: &[ModeSummary],
+    paired: &[f64],
+    source: &str,
+    window: u32,
+    watchlist: &str,
+) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
@@ -200,10 +221,17 @@ pub fn render_table(sum: &[ModeSummary], source: &str, window: u32, watchlist: &
     let arr = sum.iter().find(|s| s.mode == Mode::Array);
     let rf = sum.iter().find(|s| s.mode == Mode::Ref);
     if let (Some(a), Some(r)) = (arr, rf) {
+        let mut p = paired.to_vec();
+        let (lo, hi) = (
+            p.iter().cloned().fold(f64::INFINITY, f64::min),
+            p.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        );
+        let mid = median(&mut p);
         let _ = writeln!(
             o,
-            "\nArrayBook / RefBook parse+apply throughput ratio (medians): {:.2}x; source `{source}`, array window {window} levels/side, watchlist {watchlist}; in-memory bytes, gunzip and file I/O excluded; fresh process per run, modes interleaved; the array and reference rows do not hash the event log, the last row does.",
-            a.median_mps / r.median_mps
+            "\nArrayBook / RefBook parse+apply throughput ratio (medians): {:.2}x; per-run paired ratio min / median / max over {} runs: {lo:.2}x / {mid:.2}x / {hi:.2}x; source `{source}`, array window {window} levels/side, watchlist {watchlist}; in-memory bytes, gunzip and file I/O excluded; fresh process per run, modes interleaved; the array and reference rows do not hash the event log, the last row does.",
+            a.median_mps / r.median_mps,
+            paired.len()
         );
     }
     o
@@ -292,6 +320,7 @@ pub fn run_quick(a: &BenchQuickArgs) -> Result<i32, Error> {
     let sum = summarise(&results);
     report.push_str(&render_table(
         &sum,
+        &paired_ratios(&results),
         &a.file
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -378,7 +407,29 @@ mod tests {
         assert_eq!(s[1].median_ns, 10.0);
         assert_eq!(s[1].min_mps, 5e7);
         assert_eq!(s[1].max_mps, 2e8);
-        let t = render_table(&s, "x", 2048, "all");
+        // one array run pairs with the first reference run only (100 ns vs 20 ns -> 5x)
+        let paired = paired_ratios(&rs);
+        assert_eq!(paired, vec![5.0]);
+        let t = render_table(&s, &paired, "x", 2048, "all");
         assert!(t.contains("ratio (medians): 5.00x"));
+        assert!(t.contains(
+            "per-run paired ratio min / median / max over 1 runs: 5.00x / 5.00x / 5.00x"
+        ));
+        // three interleaved runs: pairs are (run 1 array, run 1 ref) ... in run order
+        let once = |mode, ns| OnceResult { mode, n: 10, ns };
+        let three = [
+            once(Mode::Array, 10),
+            once(Mode::Ref, 40), // 4x
+            once(Mode::Array, 100),
+            once(Mode::Ref, 100), // 1x, a load spike hit both
+            once(Mode::Array, 20),
+            once(Mode::Ref, 50), // 2.5x
+        ];
+        assert_eq!(paired_ratios(&three), vec![4.0, 1.0, 2.5]);
+        let t = render_table(&summarise(&three), &paired_ratios(&three), "x", 2048, "all");
+        assert!(t.contains("ratio (medians): 2.50x"), "{t}");
+        assert!(t.contains(
+            "per-run paired ratio min / median / max over 3 runs: 1.00x / 2.50x / 4.00x"
+        ));
     }
 }

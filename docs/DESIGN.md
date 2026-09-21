@@ -82,19 +82,27 @@ bitmap, 4096 levels: 64 words x 8 B = 512 B = 8 x 64 B lines = 4 x 128 B lines, 
 ```
 
 An `add` at an in-window price touches: the id map (one `FxHashMap<u64, u32>` probe), the
-slot (one line), the level record (one line, 4-8 levels share it, so a busy touch stays hot),
-and at most two bitmap words. A `cancel` by id touches the id map, the slot, its two FIFO
-neighbours' slots (unlink) and the level record. Nothing in that path allocates; the slab has
-a `u32` free list and the id map is pre-sized by `reserve` (2x the order estimate) so its
-steady state never rehashes; both facts are enforced by the counting-allocator tests.
+slot (one line), the old tail slot's `next` link (a second slot line, unless the level was
+empty), the level record (one line, 4-8 levels share it, so a busy touch stays hot), and at
+most two bitmap words. A `cancel` by id touches the id map, the slot, its two FIFO neighbours'
+slots (unlink) and the level record. Nothing in that path allocates; the slab has a `u32` free
+list and the id map is pre-sized by `reserve` (2x the order estimate) so its steady state never
+reallocates (hashbrown may still rehash in place, which allocates nothing and which the tests
+do not observe); the no-allocation fact is what the counting-allocator tests enforce.
 
 Overflow: every positive price off the grid (sub-penny on a 1c grid) or outside
 `[base_px, base_px + (n_levels - 1) * tick]` lives in a per-side `BTreeMap<Px, Level>` with
 the same FIFO representation; `l1` compares the array best with the overflow extreme only when
 the overflow map is non-empty; emptied overflow levels are removed (the documented allocating
-path). The overflow count and the max |tick offset| are published per symbol. On the real
-pre-open prefix this is not a corner case: 0.9 % of adds are $0.01 / $199,999.99 placeholders
-(15,844 of 1,768,698 in the research pass), and the 2048-level window centred on each
+path). The overflow count and the max |tick offset| are published per symbol. The window is
+centred on the locate's first *accepted* non-placeholder add (a rejected add, e.g. a duplicate
+id, never centres it), and its tick is chosen from that price by `tick_for` (lob-feed
+`apply.rs`): 0.01 at or above $1 and for a sub-dollar price that sits on the 1c grid, 0.0001
+for a sub-dollar price that does not; a wrong guess for a sub-dollar name costs overflow-map
+hits (published), never correctness. On the real pre-open prefix the overflow map is not a
+corner case: 0.86 % of adds are placeholders by the code's own definition (`is_placeholder`:
+at or below $0.01 or at or above $199,900; 15,232 of 1,768,698 `A` + `F` messages, the "adds
+at placeholder prices" row of the stats block), and the 2048-level window centred on each
 watchlist symbol's first real add saw real prices 20,261-71,034 ticks away (README, real
 prefix block: AAPL 1,841 overflow hits, MSFT 2,446, QQQ 148, SPY 247 over 4.33 M messages).
 
@@ -128,10 +136,13 @@ rule, scheduled for the v0.2 MBO apply layer, not an ITCH rule. Oracles as tests
 gives [2, 3, 9].
 
 Framing runs over any `Read` through a 4 MB compacting buffer (gzip via flate2 with the
-zlib-rs backend when the path ends in `.gz`) and over an in-memory slice; frames are returned
-as borrowed slices and the message views are borrowed too, so parsing allocates nothing. A
-cut deflate stream (the range-downloaded prefix) ends the input with `source_cut = true`
-rather than failing; the incomplete final message is discarded and counted. Field decode uses
+zlib-rs backend when the file starts with the gzip magic `1f 8b`; the extension is not
+consulted) and over an in-memory slice; frames are returned as borrowed slices and the message
+views are borrowed too, so parsing allocates nothing. Every gzip member is decoded; bytes after
+the last member that are not another member (padding, garbage) end the input and are counted
+in the "inflated bytes consumed" row, as `gzip -dc` warns and ignores them. A cut deflate
+stream (the range-downloaded prefix) ends the input with `source_cut = true` rather than
+failing; the incomplete final message is discarded and counted. Field decode uses
 `from_be_bytes` on fixed slices: the crate needs no `unsafe`, so the plan's allowance of one
 documented unaligned read in lob-feed went unused.
 
@@ -183,9 +194,10 @@ unchanged; I11 array snapshot == reference snapshot and identical `Result<Event,
 after **every** operation; I12 the in-range (2048 ticks, clamped) and overflow-heavy
 (64 ticks, unclamped, +-40 drift per 500 ops; a fixed-seed case asserts > 100 overflows) and
 coarse-tick strategies all pass. `bid < ask` is deliberately absent: it is a replay statistic
-(9,819 crossed snapshots before `Q` and 0 after on the fixture; 21 before `Q` on the real
-pre-open prefix) and becomes an invariant only in the v0.2 matcher, where prices are generated
-relative to the opposite best.
+(the "crossed snapshots" rows count `bid >= ask` after a book change, i.e. locked *or* crossed
+books: 9,819 before `Q` and 0 after on the fixture; 21 before `Q` on the real pre-open prefix)
+and becomes an invariant only in the v0.2 matcher, where prices are generated relative to the
+opposite best.
 
 **Differential pattern** (nanolob's `test_differential.cpp`, in proptest form): an abstract
 op stream (`Vec<u64>` decoded into Add / Cancel / Execute / Delete / Replace with 5 % unknown
@@ -241,19 +253,28 @@ does not request it. `hw.l2cachesize` reports the E-cluster's 4 MiB; the preflig
 when the 1-minute load average exceeds 1.0 (exit 3), prints the report anyway, and records the
 load in the preflight. Five runs, each mode in a fresh process, modes interleaved run by run,
 median with min-max. Throughput on the compressed real prefix is reported both excluding and
-including gunzip and both rows say so, because the streamed number is gzip-bound: on the real
-head 480.6 ms of the 3,271 ms wall was inside `read`.
+including gunzip and both rows name their denominators (`parse+apply` = wall minus read, and
+the gross `wall`), because the two differ by the inflate cost and that cost is not the
+headline: on the real head 402.9 ms of the 2,736.9 ms wall (15 %) was inside `read` in the
+run the README block comes from (480.6 of 3,271 ms, also 15 %, in the earlier one); the other
+85 % is parse + apply + the incremental event-log sha256, which the bench-quick table shows is
+the largest single term (section 7). The streamed number is book-and-hash-bound, not
+gzip-bound.
 
 ## 7. Results
 
 **Table 1 — replay statistics.** The CI block for the seed-7 fixture and the local block for
-the real prefix are in README.md ("Replay statistics"); the pins are: fixture 100,000
-messages, live 3,657 / 3,649, crossed before `Q` 9,819 and 0 after, unknown-id 0, negative-qty
-0, E/C at head 668 / 668, event log 94,895 records `fd52410f...`, all-locates close hash
-`851e617c...`; real prefix 4,330,712 messages + 1 truncated, 8,906 locates, live HWM 145,701,
-crossed before `Q` 21, unknown-id 0, negative-qty 0, E/C at head 17,789 / 17,789, event log
-4,085,484 records `3514db25...`, all-locates hash `19a984f0...`, 1.55 M msgs/s excluding
-gunzip with the event log on (single run, load 12.2).
+the real prefix are in README.md ("Replay statistics"). Fixture pins (CI: `--check-readme`,
+python/tests/test_stats.py, crates/lob-bench/tests/cli.rs): 100,000 messages, live 3,657 /
+3,649, crossed before `Q` 9,819 and 0 after, unknown-id 0, negative-qty 0, E/C at head 668 /
+668, placeholder adds 413 of 41,029, event log 94,895 records `fd52410f...`, all-locates close
+hash `851e617c...`. Real-prefix pins (local only, `cargo test -p lob-feed --release --test
+real_head -- --ignored`, which asserts every literal of the README block): 4,330,712 messages
++ 1 truncated, the exact type histogram, 8,906 locates, live HWM / close 145,701 / 145,691,
+crossed before `Q` 21, unknown-id 0, negative-qty 0, E/C at head 17,789 / 17,789, placeholder
+adds 15,232 of 1,768,698, event log 4,085,484 records `3514db25...`, all-locates hash
+`19a984f0...`, and the four watchlist rows. Not pinned (reported, single run, load 11.7):
+1.86 M msgs/s excluding gunzip with the event log on (1.55 M in an earlier run at load 12.2).
 
 **Table 2 — bounded array vs tree on the same stream** (`bench-quick`, seed-7 fixture in
 memory, all 8 locates on the array book, window 2048, 5 fresh processes interleaved, Apple M1,
@@ -266,13 +287,24 @@ memory, all 8 locates on the array book, window 2048, 5 fresh processes interlea
 | parse+apply, RefBook | 4.80 M | 3.68 - 5.44 M | 208.2 |
 | parse+apply, ArrayBook + event-log sha256 | 3.30 M | 3.04 - 4.78 M | 302.7 |
 
-Ratio of medians ArrayBook / RefBook 1.90x. Two caveats that are results in themselves: the
-array row's min-max spans 3.4x under this load, so the ratio is the quotable number; and the
+Ratio of medians ArrayBook / RefBook 1.90x. Three caveats that are results in themselves.
+First, no number in this table was measured under the load gate, and the ratio is *not* more
+stable than the absolutes: the array row's min-max spans 3.4x, and repeated 5-run batches on
+this machine under load gave ratios of medians from 1.41x to 2.80x (1.41x, 1.81x, 1.90x, 2.10x,
+2.22x, 2.80x across six batches at loads 9-39), the same 2x spread as the array medians
+themselves (5.7-11.3 M). `bench-quick` now also prints the min / median / max of the per-run
+*paired* ratio (run i array over run i reference, which ran back to back), the number to quote
+once an idle re-measurement exists; until then neither the absolutes nor the ratio here is a
+result, only the ordering (array > reference in every run of every batch). Second, the
 incremental sha256 of the 34-byte event record costs more than the book operation (3.30 M vs
 9.15 M), which is why the stats block labels its msgs/s rows "+ event-log sha256" and the bench
-reports the book with and without it. The `RefBook` `l1()` allocates a boxed iterator per call
-(used by the crossed-snapshot check after every book change), which flatters the ratio in the
-array book's favour by an amount not yet measured.
+reports the book with and without it. Third, the comparator is not free of its own costs: the
+`RefBook` `l1()` allocates nothing (`BTreeMap::last_key_value` / `first_key_value`; the
+counting allocator in crates/lob-core/tests/alloc_count.rs sees 0 allocations over 10,000
+calls) but sums the best level's `VecDeque` on every call, and every cancel / execute / delete / `queue_ahead` on the `RefBook` is an O(level
+depth) linear scan in `find()`; both are what a `BTreeMap` + `VecDeque` book costs and are
+counted as part of the tree baseline, not as an unfairness. (`l2` and `snapshot` box an
+iterator; neither is on the replay path.)
 
 Figure 2 (latency histogram) and Figure 3 (throughput vs window width / overflow share) are
 v0.3 deliverables and do not exist yet; the overflow inputs for Figure 3 are already published
@@ -281,11 +313,33 @@ xctrace (full Xcode, absent); samply or perf on Linux CI is the v0.3 route.
 
 ## 8. What I left out
 
-Kernel bypass (OpenOnload / ef_vi / DPDK); FPGA parsing; A/B feed arbitration and gap
-recovery; isolcpus, IRQ pinning and busy-polling; hugepages; SPSC rings (section 4);
-hardware timestamps and PTP; cache warming; colocation; exchange conformance testing;
-re-centring of the window (v0.2 decision from the published overflow numbers); MBO replay
-(decoder only, apply rules v0.2); the matcher and simulator (v0.2). Also left out on
+What a production feed handler has and lobcore does not, with what each buys:
+
+- Kernel bypass (OpenOnload / ef_vi / DPDK): the NIC writes into user-space rings, removing
+  the kernel's socket copies and syscalls; microseconds per packet become sub-microsecond.
+- FPGA parsing: the ITCH decode (and often the book itself) runs in hardware at wire speed,
+  removing the CPU from the path; tens of nanoseconds instead of hundreds.
+- A/B feed arbitration and gap recovery: two multicast copies of the feed, take whichever
+  sequence number arrives first and re-request what neither delivered; without it a single
+  dropped packet corrupts every book.
+- isolcpus, IRQ pinning and busy-polling: a core that runs nothing else, takes no interrupts
+  and never sleeps, removing scheduler jitter (tens of microseconds) and wake-up latency.
+- Hugepages: 2 MB / 1 GB pages for the book arrays, removing TLB misses on a working set
+  larger than the TLB covers (a few hundred 4 KB pages).
+- SPSC rings (section 4): decode on one core, apply on another, handing off through a
+  lock-free single-producer / single-consumer queue; buys pipelining at the cost of one
+  cache-line transfer per message.
+- Hardware timestamps and PTP: the NIC stamps each packet against a clock synchronised to the
+  exchange's, so latency is measured in the right units and from the right origin.
+- Cache warming: touching the hot path during quiet periods so the first message after a
+  pause does not pay instruction- and data-cache misses.
+- Colocation: the box sits in the exchange's data centre, removing the wide-area leg (hundreds
+  of microseconds to milliseconds) that dwarfs everything above.
+- Exchange conformance testing: the venue's certification that the handler decodes every
+  message the way the venue means it.
+
+Also left out: re-centring of the window (v0.2 decision from the published overflow numbers);
+MBO replay (decoder only, apply rules v0.2); the matcher and simulator (v0.2). Left out on
 purpose: Stoikov's micro-price (a fitted Markov table, not a closed form; the weighted mid is
 the deterministic feature shipped), and any LOBSTER reader (its sample terms forbid the use).
 
@@ -300,7 +354,7 @@ Wrong number -> corrected number, in the order they were hit; nothing composed.
    zlib figure and the README states the decoder next to the number.
 2. Synthetic fixture live count: the generator's build report said "3,810 live orders at
    close"; the truth sidecar sums to 3,649 across the 8 locates and the replay agrees. 3,649
-   is what is quoted.
+   is what is quoted. (The 3,810 is from session notes; no artefact of it survives in the repo.)
 3. Debug-profile sha256: the 100k-message truth-after-every-message test took ~120 s in the
    dev profile because sha256 over the whole truth book ran unoptimised after every message;
    `[profile.dev.package.sha2]` and `[profile.dev.package.lob-synth]` at `opt-level = 3` took
@@ -315,12 +369,15 @@ Wrong number -> corrected number, in the order they were hit; nothing composed.
    min-max (3.34-11.47 M msgs/s) is the visible damage; an earlier 3-run bench by the lob-feed
    builder at load 17 read ~9.7 M without the event log and 4.0 M with it, and a second 5-run
    batch at load 14.29 gave medians of 7.45 M (array), 3.54 M (reference) and 3.56 M (array +
-   log), ratio 2.10x; the three batches agree with the quoted one (9.15 / 4.80 / 3.30 M, 1.90x)
-   only in ratio.
+   log), ratio 2.10x (both from session notes, not reproducible: the gate refused `--out`, so
+   no report was persisted). The batches do not agree in ratio either: later verification runs
+   gave 1.41x-2.80x (section 7).
 6. The throughput headline would have been the hash: with the event log on, the
    parse+apply number was 4.0 M and the book looked slow; separating the rows showed the sha256
-   costs more per message than the book (~140 ns vs ~100 ns on this M1). The bench now reports
-   both and the stats block labels its rows.
+   costs more per message than the book (~140 ns vs ~100 ns on this M1, from session notes; the
+   reproducible version is the table above: 302.7 - 109.3 = 193 ns/msg for the hash against
+   109.3 ns/msg for parse + apply). The bench now reports both and the stats block labels its
+   rows.
 7. README timing rows: the stats block first written by `--write-readme` included two msgs/s
    rows, and a second `--write-readme` run rewrote them (2.55 M -> 2.12 M, single runs), so the
    README changed byte-wise between runs. The block written into a README now carries no timing
@@ -349,7 +406,7 @@ cargo run --release -p lob-bench -- synth --seed 7 --n 100000 --out /tmp/s7.itch
 cmp /tmp/s7.itch tests/fixtures/synth_s7_100k.itch            # byte-identical fixture
 cargo run --release -p lob-bench -- replay --stats tests/fixtures/synth_s7_100k.itch --check-readme README.md
 cargo run --release -p lob-bench -- bench-quick tests/fixtures/synth_s7_100k.itch --runs 5
-cd python/lobcore && maturin develop --release && cd ../.. && pytest -q   # 37 tests
+cd python/lobcore && maturin develop --release && cd ../.. && pytest -q   # 53 tests
 scripts/fetch_itch.sh                                         # local only, ~1 min at ~0.8 MB/s
 cargo run --release -p lob-bench -- replay --stats data/itch_12302019_head50m.gz --symbol AAPL --symbol MSFT --symbol QQQ --symbol SPY
 cargo test -p lob-feed --release --test real_head -- --ignored
@@ -359,9 +416,11 @@ Fixture hashes: `tests/fixtures/synth_s7_100k.itch` 2,968,812 B sha256
 `20cc1acc13a893c060d0fd1658a544c54dff96cf66688a6be9ace78d9d752268`; its truth CSV (not
 committed) sha256 `41488ad1640f1e163983ed38bfd6c5d2f656c1ab1f0ba234f6b5ad7f62a39029`;
 `crates/lob-core/tests/fixtures/ops_seed7.bin` 125,000 B sha256 `1fa8bb02...`; real prefix
-md5 `8bd91e6f5b4a31d4d50dd6ac8a8fe7e2` (52,428,800 B). CI (ubuntu + macOS) runs everything
-above except the two `data/` commands; the real prefix is local only and its numbers are
-labelled so.
+md5 `8bd91e6f5b4a31d4d50dd6ac8a8fe7e2` (52,428,800 B). CI (ubuntu + macOS) runs fmt, clippy,
+the test suite, the fixture regeneration + `cmp`, `--check-readme`, the wheel build, `ruff
+check` and pytest; `bench-quick` is run locally only (a `--runs 1` smoke test runs inside
+crates/lob-bench/tests/cli.rs), there is no `cargo bench` target in v0.1 (criterion is v0.3),
+and the two `data/` commands are local only with their numbers labelled so.
 
 ## 11. References
 
@@ -395,5 +454,6 @@ labelled so.
   https://github.com/seanlane/itchy-rust; https://github.com/nkaz001/hftbacktest
   (`hftbacktest/src/backtest/models/queue.rs`, the v0.2 queue models).
 - Crates: pyo3 0.29.2, numpy 0.29.0, maturin 1.15.0, proptest 1.11.0, flate2 1.1.10 (zlib-rs),
-  rustc-hash 2, sha2 0.10, rand 0.9 / rand_chacha 0.9, clap 4; criterion 0.8.2 and
-  hdrhistogram 7.6.0 pinned for v0.3.
+  rustc-hash 2, sha2 0.10, rand 0.9 / rand_chacha 0.9, clap 4; criterion 0.8 and
+  hdrhistogram 7.6 are reserved in `[workspace.dependencies]` for v0.3 (used by no crate, so
+  absent from Cargo.lock).

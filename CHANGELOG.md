@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — 2026-09-15
+## 0.1.0 — 2026-09-21
 
 First release: the read-only book, replay, synthetic day, features, CLI and Python surface.
 
@@ -37,4 +37,54 @@ First release: the read-only book, replay, synthetic day, features, CLI and Pyth
 
 Not in 0.1.0: matcher, simulator, MBO apply rules, per-event Python iterator, window
 re-centring (v0.2); criterion / hdrhistogram harness, LATENCY.md, samply profile, rtrb SPSC
-row, quotesim adapter (v0.3).
+row, quotesim adapter (v0.3); the cargo-deny licence check the plan listed (NOTICE records the
+dependency licences by hand).
+
+### Found by the pre-release verification pass
+
+Each fix landed with a test that failed before the change:
+
+- `lobcore.synth_itch(..., truth=True)` returned `book_hash` as a numpy `S32` array, and numpy
+  strips trailing NUL bytes from `S` elements: 420 of the fixture's 100,000 digests (every one
+  ending in 0x00) came back 31 bytes long and unequal to the true hash. Now an `(n, 32)` uint8
+  array (`row.tobytes()` is the digest); the truth dict also carries `l5_bid` / `l5_ask`
+  (`(n, 5)` uint32) as the Rust `Truth` and the CLI CSV do. python/tests/test_synth.py checks
+  every row against `Book` / `RefBook`.
+- Every `synth_itch` keyword is validated (`SynthConfig::validate` / `check_args` in lob-synth):
+  an all-zero, negative or NaN `mix`, a rate outside `[0, 1]`, `open_ns >= close_ns`, a
+  `close_ns` past 48 bits, `locates = 0` or `n > 2^32` raise `ValueError` instead of reaching a
+  Rust panic, which under the wheel's `panic = "abort"` killed the interpreter (SIGABRT). The
+  CLI maps the same check to `lobcore: --... ` / exit 1 (`--locates 0` used to exit 134).
+- `Session::apply_msg` returns whether the book changed; `replay_itch` emits rows and advances
+  `every_n` / `every_ns` on book-changing messages only, as its docstring said (a rejected
+  message used to emit a duplicate row and count toward the cadence).
+- The E/C-at-head fraction counts executions the book applied (a rejected over-execute no
+  longer inflates the denominator).
+- A watched locate's array window is centred after the first *accepted* non-placeholder add
+  or replace; a rejected message (duplicate id, unknown reference, bad qty) used to centre it
+  and could move the published max |offset|. Hashes and the fixture / real-prefix blocks are
+  unchanged (they have no rejected messages).
+- `DbnError::Record { at }` names the offending record's offset (it reported the end of the
+  record area).
+- gzip is detected by the `1f 8b` magic, not the extension; every member is decoded; bytes
+  after the last member that are not another member end the input and are counted in the
+  "inflated bytes consumed" row (they used to fail the whole file, losing every message of an
+  intact member); an empty `.gz` is an empty input, not a cut stream.
+- Stats block: new row "adds at placeholder prices" (fixture 413 of 41,029 = 1.01 %, real
+  prefix 15,232 of 1,768,698 = 0.86 %, replacing the untraceable 15,844 in DESIGN.md); the
+  stdout timing rows name their denominators (`parse+apply X ms, read Y ms` / `wall Z ms`).
+  `replay_stats` gains `placeholder_adds` and `trailing_bytes`.
+- `bench-quick` prints the min / median / max of the per-run paired array / reference ratio.
+- Tests: the ignored real-prefix test asserts every literal of the README block (histogram,
+  8,906 locates, live HWM / close, crossed 21, E/C 17,789 / 17,789, event-log and all-locates
+  hashes, the four watchlist rows); python/tests/test_stub.py compares parameter names and
+  defaults with the extension's `__text_signature__`; crates/lob-feed/tests/session_semantics.rs
+  covers rejected messages; the counting-allocator test also covers `RefBook::l1`.
+- Docs: README (three badges, single-run rows moved out of the table, the ratio-robustness
+  claim withdrawn, `preflight` is a module not a subcommand, crossed = `bid >= ask`);
+  DESIGN.md (gzip share of wall is 15 %, not "gzip-bound"; `RefBook::l1` does not allocate and
+  the tree baseline's real cost is the O(depth) `find`; add path touches the old tail slot;
+  "never reallocates" not "never rehashes"; tick rule; section 8 says what each omitted
+  technique buys; pitfalls 2 / 5 / 6 marked as session notes; CI description; criterion /
+  hdrhistogram reserved, not pinned); CI runs `ruff check python` (repo-root `ruff.toml`) and
+  no longer runs the vacuous `cargo bench --no-run`; `lobcore.pyi` names `EventKind`.

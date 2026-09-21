@@ -102,14 +102,15 @@ fn truncated_record_is_an_error_and_other_rtypes_are_skipped() {
     let all: Vec<_> = recs.collect();
     assert_eq!(all.len(), 2);
     assert!(all[0].is_ok());
-    assert!(matches!(
+    // the second record starts at byte 56 of the record area; `at` names it, not the end
+    assert_eq!(
         all[1],
         Err(DbnError::Record {
+            at: 56,
             len: 56,
             have: 55,
-            ..
         })
-    ));
+    );
     // an MBP-1 header (rtype 0x01, 4 words) followed by the first GLBX record
     let mut mixed = GLBX[..8 + 352].to_vec();
     mixed.extend_from_slice(&[4, 0x01]);

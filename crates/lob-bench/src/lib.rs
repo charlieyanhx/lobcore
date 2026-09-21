@@ -1,8 +1,8 @@
 //! lob-bench: the `lobcore` binary. `replay --stats` renders the replay-statistics block and
 //! checks or rewrites the README copy; `synth` writes a seeded synthetic ITCH day; `bench-quick`
-//! measures messages per second (parse only, parse+apply on the array book, parse+apply on the
-//! reference book) over five fresh processes behind a machine preflight and a load gate.
-//! criterion / hdrhistogram harnesses are v0.3.
+//! measures messages per second in four modes (parse only, parse+apply on the array book,
+//! parse+apply on the reference book, array book + event-log sha256) over five fresh processes
+//! behind a machine preflight and a load gate. criterion / hdrhistogram harnesses are v0.3.
 
 #![deny(unsafe_code)]
 

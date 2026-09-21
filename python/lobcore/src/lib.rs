@@ -14,6 +14,12 @@
 //!
 //! The batch entry points (`replay_itch`, `replay_stats`, `synth_itch`) run their Rust loop
 //! with the GIL released (`Python::detach`) and hand back numpy arrays or `bytes`.
+//!
+//! The wheel is built with the workspace release profile, `panic = "abort"`: a Rust panic
+//! behind this boundary cannot become a `PanicException`, it ends the interpreter with
+//! SIGABRT. Every argument is therefore validated here (or in the Rust API's own `Result`
+//! paths) before any code that could panic runs, and no `unwrap` / `expect` in this crate can
+//! fail on user input.
 
 #![deny(unsafe_code)]
 

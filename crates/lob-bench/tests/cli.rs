@@ -190,7 +190,33 @@ fn synth_reproduces_the_fixture_and_writes_truth() {
         .output()
         .unwrap();
     assert!(!bad.status.success());
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("at least"));
+    assert_eq!(bad.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&bad.stderr).trim(),
+        "lobcore: --n_msgs must be at least 2 * locates + 6 = 22, got 5"
+    );
+    // `--locates 0` passes the `--n` bound (min 6) and used to reach lob-synth's panic (exit
+    // 134 under `panic = "abort"`); it must fail with the same `lobcore: ...` / exit 1 contract
+    let zero = lobcore()
+        .args([
+            "synth",
+            "--seed",
+            "1",
+            "--n",
+            "100",
+            "--locates",
+            "0",
+            "--out",
+        ])
+        .arg(tmp("zero.itch"))
+        .output()
+        .unwrap();
+    assert_eq!(zero.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&zero.stderr).trim(),
+        "lobcore: --locates must be at least 1"
+    );
+    assert!(!tmp("zero.itch").exists());
 }
 
 #[test]

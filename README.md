@@ -359,5 +359,6 @@ lobcore/
 - [deskboard](https://github.com/charlieyanhx/deskboard) - trading-desk dashboard; consumes nothing from lobcore in v0.1-v0.3.
 - [pricers](https://github.com/charlieyanhx/pricers), [riskkit](https://github.com/charlieyanhx/riskkit), [volsurf](https://github.com/charlieyanhx/volsurf) - option pricing, risk and surface tooling.
 - [quant-research-agent](https://github.com/charlieyanhx/quant-research-agent) - the research-task runner.
+- [exhibitkit](https://github.com/charlieyanhx/exhibitkit), [claimkeeper](https://github.com/charlieyanhx/claimkeeper) - research documents with mandatory source lines, and the ledger that scores their claims.
 
 MIT © Hanxiong (Charlie) Yan

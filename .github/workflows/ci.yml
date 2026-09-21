@@ -29,13 +29,18 @@ jobs:
           cargo run --release -p lob-bench -- replay --stats tests/fixtures/synth_s7_100k.itch --check-readme README.md
   python:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # the components must match rust-toolchain.toml: letting rustup add them lazily on the
+      # first cargo call failed on macos-latest ("detected conflict: 'bin/cargo-clippy'")
       - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: clippy, rustfmt
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
